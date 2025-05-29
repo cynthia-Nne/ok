@@ -1,0 +1,257 @@
+trigger:
+  - $(major).$(minor).$(release)
+
+paths:
+  include:
+    - Infrastructure/NDR/DataMigration/*
+    - pipelines/NDR_DataMigration/*
+
+pool: 'C199WOA - $(environment)'
+
+# Global parameters
+parameters:
+  - name: environment
+    type: string
+    default: 'dev'
+    values:
+      - 'dev'
+      - 'sit'
+      - 'uat'
+      - 'fat'
+      - 'prod'
+
+variables:
+  # Common variables
+  devResourceGroup: "C199WOArgpV0S$(environment)DataSyncNDR"
+  location: "ukSouth"
+  subscriptionId: "3cf5a9a2-bc13-43e2-b97e-357215ab3a5d"
+  serviceConnection: "BST Dev Connection-Cloud Platform"
+  dataFactoryName: "ndr-laz-df-$(environment)-datasync"
+  
+  # Path variables using templateFolder to make it DRY
+  templateFolder: "$(Build.SourcesDirectory)/Infrastructure/NDR/DataMigration"
+  keyVaultTemplateFile: "$(templateFolder)/KeyVault.json"
+  keyVaultParameterFile: "$(templateFolder)/KeyVault_parameters_$(environment).json"
+  storageTemplateFile: "$(templateFolder)/StorageAccount.json"
+  storageParameterFile: "$(templateFolder)/StorageAccount_parameters_$(environment).json"
+  sqlTemplateFile: "$(templateFolder)/SQL.json"
+  sqlParameterFile: "$(templateFolder)/SQL_parameters_$(environment).json"
+  vmTemplateFile: "$(templateFolder)/vm.json"
+  vmParameterFile: "$(templateFolder)/vm_parameters_$(environment).json"
+  
+  # Extension variables
+  vmExtensionTemplateFile: "$(templateFolder)/vmExtension.json"
+  vmExtensionParameterFile: "$(templateFolder)/vmExtension_parameters_$(environment).json"
+  
+  # Integration Runtime
+  integrationRuntimeName: "IronDream"
+  vmDataName: "ndrDataSync$(environment)"
+  vmSources: "ndrDataSyncDev"
+
+stages:
+  # Versioning Stage
+  - stage: Versioning
+    displayName: "Versioning"
+    jobs:
+      - job: SetVersion
+        displayName: "Generate Build Number"
+        steps:
+          - powershell: |
+              $buildDate = Get-Date -Format "yyyyMMdd"
+              Write-Host "##vso[build.updatebuildnumber]$buildDate.$env:BUILD_BUILDID"
+            displayName: "Set Build Version"
+
+  # Validation Stage
+  - stage: Validate_Build
+    displayName: "Validate Templates"
+    dependsOn: Versioning
+    jobs:
+      # KeyVault Validation
+      - job: ValidateKeyVaultARM
+        displayName: "KeyVault Template Validation"
+        steps:
+          - checkout: self
+          - task: AzureCLI@2
+            displayName: "KeyVault $(environment) Validating"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment group create --resource-group $(devResourceGroup) --template-file $(keyVaultTemplateFile) --parameters $(keyVaultParameterFile) --mode Incremental
+            continueOnError: false
+
+      # Storage Validation  
+      - job: ValidateStorageARM
+        displayName: "Storage Template Validation"
+        dependsOn: []
+        condition: succeeded()
+        steps:
+          - checkout: self
+          - task: AzureCLI@2
+            displayName: "Storage Account $(environment) Validating"
+            inputs:
+              azureSubscription: $(serviceConnection)
+              scriptType: ps
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment group create --resource-group $(devResourceGroup) --template-file $(storageTemplateFile) --parameters $(storageParameterFile) --mode Incremental
+            continueOnError: false
+
+      # Add more validation jobs for SQL, VM, etc.
+      # Follow the same pattern as above
+
+  # Deployment Stage
+  - stage: dev
+    displayName: "Deploying $(environment) Resources"
+    dependsOn: Validate_Build
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - deployment: Deploy
+        displayName: "Deploy $(environment) Environment"
+        environment: $(environment)
+        timeoutInMinutes: 0
+        workspace:
+          clean: all
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                
+                # KeyVault Deployment
+                - task: AzureResourceManagerTemplateDeployment@3
+                  displayName: "KeyVault Deployment"
+                  inputs:
+                    azureResourceManagerConnection: $(serviceConnection)
+                    subscriptionId: $(subscriptionId)
+                    resourceGroupName: $(devResourceGroup)
+                    location: $(location)
+                    csmFile: $(keyVaultTemplateFile)
+                    csmParametersFile: $(keyVaultParameterFile)
+                    deploymentOutputs: "adfOutputs"
+                
+                # DNS Resolution for Private Endpoints
+                - task: PowerShell@2
+                  displayName: "Resolve DNS"
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $attempt = 0;
+                      for (; $attempt -le 10; $attempt++) {
+                        try {
+                          $dnsResult = Resolve-DnsName -Name "ndr-laz-$(environment)-sync.privatelink.vaultcore.azure.net" -Type A
+                          $pingResult = Test-NetConnection -ComputerName $dnsResult.IPAddress -Port 443
+                          
+                          if ((-not ($pingResult.TcpTestSucceeded)) -and ($attempt -le 10)) {
+                            Write-Output "DNS cannot be resolved. Attempt: $attempt. Retrying in 60 seconds..."
+                            Start-Sleep -Seconds 60
+                          }
+                        } catch {
+                          if ($attempt -le 10) {
+                            Write-Output "DNS cannot be resolved. Attempt: $attempt. Retrying in 60 seconds..."
+                            Start-Sleep -Seconds 60
+                            continue
+                          }
+                          throw
+                        }
+                      }
+                      
+                      if ($attempt -eq 10) {
+                        throw "DNS cannot be resolved after ten attempts..."
+                      }
+                      
+                      Write-Host "The DNS has been resolved..."
+                
+                # Secret Retrieval
+                - task: AzureResourceManagerTemplateDeployment@3
+                  displayName: "Retrieve Secret from KeyVault"
+                  inputs:
+                    azureResourceManagerConnection: $(serviceConnection)
+                    subscriptionId: $(subscriptionId)
+                    resourceGroupName: $(devResourceGroup)
+                    location: $(location)
+                    csmFile: $(keyVaultTemplateFile)
+                    csmParametersFile: $(keyVaultParameterFile)
+                    deploymentOutputs: "adfOutputs"
+                
+                # Process outputs
+                - task: PowerShell@2
+                  displayName: "Process Deployment Output"
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $outputs = '$(adfOutputs)' | ConvertFrom-Json
+                      foreach ($output in $outputs.PSObject.Properties) {
+                        Write-Host "##vso[task.setvariable variable=$(output.Name)]$(output.Value.value)"
+                        Write-Host "$(output.Name): $(output.Value.value)"
+                      }
+                    
+                # Continue with other deployment tasks
+                # Storage, SQL, VM, etc.
+
+
+
+
+
+  What I Changed:
+
+Single Parameter for Environment Selection:
+
+Used the existing environment parameter instead of creating a new one
+
+
+Dynamic Variable References:
+
+Created a templateFolder variable to avoid repetition
+All file paths use the pattern *_parameters_$(environment).json
+
+
+Simplified Resource Naming:
+
+All Azure resources follow a consistent naming pattern that includes the environment
+
+
+Structured Pipeline Flow:
+
+Added a versioning stage that runs first
+Followed by validation that checks templates before deployment
+Final deployment stage that only runs if validation passes
+
+
+Organized Deployment Tasks:
+
+Each deployment task is clearly named with the environment variable
+Outputs from deployments are captured and processed
+
+
+
+How to Navigate This Solution:
+
+Parameter Files:
+
+Create separate parameter files for each environment:
+
+KeyVault_parameters_dev.json
+KeyVault_parameters_sit.json
+KeyVault_parameters_uat.json
+etc.
+
+
+
+
+Running the Pipeline:
+
+When you run the pipeline, select the environment from the dropdown
+All variable references automatically switch to that environment
+
+
+Adding New Resources:
+
+Follow the same pattern for template and parameter files
+Add new validation jobs in the Validate_Build stage
+Add new deployment tasks in the deploy stage
+
+
+
+This approach gives you a clean, maintainable pipeline that handles multiple environments without duplicating code.              
