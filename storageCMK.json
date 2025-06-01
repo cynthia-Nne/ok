@@ -1,0 +1,82 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "accountType": { "type": "string" },
+    "kind": { "type": "string" },
+    "minimumTlsVersion": { "type": "string" },
+    "supportHttpsTrafficOnly": { "type": "bool" },
+    "allowBlobPublicAccess": { "type": "bool" },
+    "allowSharedKeyAccess": { "type": "bool" },
+    "defaultToOAuthAuthentication": { "type": "bool" },
+    "enableNfsV3": { "type": "bool" },
+    "publicNetworkAccess": { "type": "string" },
+    "allowCrossTenantReplication": { "type": "bool" },
+    "networkAclsDefaultAction": { "type": "string" },
+    "networkAclsBypass": { "type": "string" },
+    "networkAclsVirtualNetworkRules": { "type": "array" },
+    "dnsEndpointType": { "type": "string" },
+    "largeFileSharesState": { "type": "string" },
+    "keyVaultUri": { "type": "string" },
+    "keyName": { "type": "string" },
+    "encryptionEnabled": { "type": "bool" },
+    "keyTypeForTableAndQueueEncryption": { "type": "string" },
+    "infrastructureEncryptionEnabled": { "type": "bool" }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('storageAccountName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "[parameters('kind')]",
+      "sku": {
+        "name": "[parameters('accountType')]"
+      },
+      "properties": {
+        "minimumTlsVersion": "[parameters('minimumTlsVersion')]",
+        "supportsHttpsTrafficOnly": "[parameters('supportHttpsTrafficOnly')]",
+        "allowBlobPublicAccess": "[parameters('allowBlobPublicAccess')]",
+        "allowSharedKeyAccess": "[parameters('allowSharedKeyAccess')]",
+        "defaultToOAuthAuthentication": "[parameters('defaultToOAuthAuthentication')]",
+        "isNfsV3Enabled": "[parameters('enableNfsV3')]",
+        "publicNetworkAccess": "[parameters('publicNetworkAccess')]",
+        "allowCrossTenantReplication": "[parameters('allowCrossTenantReplication')]",
+        "networkAcls": {
+          "defaultAction": "[parameters('networkAclsDefaultAction')]",
+          "bypass": "[parameters('networkAclsBypass')]",
+          "virtualNetworkRules": "[parameters('networkAclsVirtualNetworkRules')]"
+        },
+        "dnsEndpointType": "[parameters('dnsEndpointType')]",
+        "largeFileSharesState": "[parameters('largeFileSharesState')]",
+        "encryption": {
+          "identity": {
+            "type": "SystemAssigned"
+          },
+          "keySource": "Microsoft.Keyvault",
+          "keyVaultProperties": {
+            "keyVaultUri": "[parameters('keyVaultUri')]",
+            "keyName": "[parameters('keyName')]"
+          },
+          "services": {
+            "blob": {
+              "enabled": "[parameters('encryptionEnabled')]"
+            },
+            "file": {
+              "enabled": "[parameters('encryptionEnabled')]"
+            },
+            "table": {
+              "enabled": "[parameters('encryptionEnabled')]",
+              "keyType": "[parameters('keyTypeForTableAndQueueEncryption')]"
+            },
+            "queue": {
+              "enabled": "[parameters('encryptionEnabled')]",
+              "keyType": "[parameters('keyTypeForTableAndQueueEncryption')]"
+            }
+          },
+          "requireInfrastructureEncryption": "[parameters('infrastructureEncryptionEnabled')]"
+        }
+      }
+    }
+  ]
+}
