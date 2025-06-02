@@ -5,7 +5,7 @@
   "location": "[parameters('location')]",
   "dependsOn": [
     "[resourceId('Microsoft.Sql/servers/databases', parameters('sqlServerName'), parameters('databaseName'))]",
-    "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', 'bst-iaz-umi-dev-dm')]"
+    "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', 'bst')]"
   ],
   "kind": "AzureCLI",
   "properties": {
@@ -52,7 +52,7 @@ DECLARE @sql nvarchar(max);
 
 -- Create first user if it doesn't exist
 IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'bst')
-    SET @sql = 'CREATE USER [bst-iaz-umi-dev-dm] FROM EXTERNAL PROVIDER;';
+    SET @sql = 'CREATE USER [] FROM EXTERNAL PROVIDER;';
 EXEC sp_executesql @sql;
 
 -- Add roles for first user if it exists
@@ -64,7 +64,7 @@ END
 
 -- Create second user if it doesn't exist
 IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '')
-    SET @sql = 'CREATE USER [abhishek.pradhan@mrc.gov.uk] FROM EXTERNAL PROVIDER;';
+    SET @sql = 'CREATE USER [] FROM EXTERNAL PROVIDER;';
 EXEC sp_executesql @sql;
 
 -- Add roles for second user if it exists
