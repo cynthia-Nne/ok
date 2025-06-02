@@ -39,3 +39,37 @@
       
   }
 }
+
+
+
+
+
+-- First, let's set NOCOUNT to suppress messages
+SET NOCOUNT ON;
+
+-- Try creating users directly without the IF-BEGIN-END blocks
+DECLARE @sql nvarchar(max);
+
+-- Create first user if it doesn't exist
+IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = 'bst')
+    SET @sql = 'CREATE USER [bst-iaz-umi-dev-dm] FROM EXTERNAL PROVIDER;';
+EXEC sp_executesql @sql;
+
+-- Add roles for first user if it exists
+IF EXISTS (SELECT * FROM sys.database_principals WHERE name = 'bst')
+BEGIN
+    ALTER ROLE db_datareader ADD MEMBER [bst];
+    ALTER ROLE db_datawriter ADD MEMBER [bst];
+END
+
+-- Create second user if it doesn't exist
+IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '')
+    SET @sql = 'CREATE USER [abhishek.pradhan@mrc.gov.uk] FROM EXTERNAL PROVIDER;';
+EXEC sp_executesql @sql;
+
+-- Add roles for second user if it exists
+IF EXISTS (SELECT * FROM sys.database_principals WHERE name = '')
+BEGIN
+    ALTER ROLE db_datareader ADD MEMBER [];
+    ALTER ROLE db_datawriter ADD MEMBER [];
+END
