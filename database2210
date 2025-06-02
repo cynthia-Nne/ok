@@ -35,28 +35,7 @@
         "value": "user1-object-id-here"
       }
     ],
-    "scriptContent": "
-      # Get resource group name from Azure context
-      RESOURCE_GROUP=$(az group show --query name -o tsv)
+    "scriptContent": "scriptContent": "[concat('#!/bin/bash\n', 'RESOURCE_GROUP=$(az group show --query name -o tsv)\n', 'az sql db execute -g $RESOURCE_GROUP -s $SERVER_NAME -n $DATABASE_NAME -q \"', 'IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = ''$UMI_NAME'') ', 'BEGIN ', '  CREATE USER [$UMI_NAME] FROM EXTERNAL PROVIDER; ', '  ALTER ROLE db_datareader ADD MEMBER [$UMI_NAME]; ', '  ALTER ROLE db_datawriter ADD MEMBER [$UMI_NAME]; ', 'END ', 'IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = ''$USER1_EMAIL'') ', 'BEGIN ', '  CREATE USER [$USER1_EMAIL] FROM EXTERNAL PROVIDER WITH OBJECT_ID = ''$USER1_OBJECTID''; ', '  ALTER ROLE db_datareader ADD MEMBER [$USER1_EMAIL]; ', '  ALTER ROLE db_datawriter ADD MEMBER [$USER1_EMAIL]; ', 'END', '\"\n')]"
       
-      # Execute SQL commands
-      az sql db execute -g $RESOURCE_GROUP -s $SERVER_NAME -n $DATABASE_NAME -f - <<EOF
-      IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$UMI_NAME')
-      BEGIN
-          CREATE USER [$UMI_NAME] FROM EXTERNAL PROVIDER;
-          ALTER ROLE db_datareader ADD MEMBER [$UMI_NAME];
-          ALTER ROLE db_datawriter ADD MEMBER [$UMI_NAME];
-      END
-
-      -- Create user for specific team member
-      IF NOT EXISTS (SELECT * FROM sys.database_principals WHERE name = '$USER1_EMAIL')
-      BEGIN
-          CREATE USER [$USER1_EMAIL] FROM EXTERNAL PROVIDER WITH OBJECT_ID = '$USER1_OBJECTID';
-          ALTER ROLE db_datareader ADD MEMBER [$USER1_EMAIL];
-          ALTER ROLE db_datawriter ADD MEMBER [$USER1_EMAIL];
-      END
-      GO
-      EOF
-    "
   }
 }
