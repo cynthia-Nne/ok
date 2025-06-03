@@ -73,3 +73,26 @@ BEGIN
     ALTER ROLE db_datareader ADD MEMBER [];
     ALTER ROLE db_datawriter ADD MEMBER [];
 END
+
+
+
+
+
+
+
+
+
+
+
+
+Subject: RE:  
+
+Hi ,
+
+Thank you again for your guidance.
+
+Following your note, I connected with  to review the issue in more detail. We’ve confirmed that the deployment is failing due to a permission requirement for Microsoft.ContainerInstance/register/action. This permission is needed to provision a container instance required by the deploymentScript resource in the ARM template — without it, the script doesn’t get a chance to execute.
+
+From what we can see, this sits at the infrastructure level, and likely needs to be enabled as part of 
+
+I’d be grateful for your support in either pointing us to the right contact within  who can action this, or advising on the appropriate next steps to request the required access.
