@@ -1,0 +1,92 @@
+$server = "<your-server>.database.windows.net"
+$database = "<your-database>"
+$user = "<your-username>"
+$password = "<your-password>"
+
+$connectionString = "Server=tcp:$server,1433;Initial Catalog=$database;Persist Security Info=False;User ID=$user;Password=$password;MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+
+try {
+    Write-Host "Attempting to wake SQL database..."
+    $conn = New-Object System.Data.SqlClient.SqlConnection
+    $conn.ConnectionString = $connectionString
+    $conn.Open()
+    Write-Host "✅ SQL Server is awake."
+    $conn.Close()
+}
+catch {
+    Write-Warning "First attempt failed. Retrying in 30 seconds..."
+    Start-Sleep -Seconds 30
+    try {
+        $conn.Open()
+        Write-Host "✅ SQL Server woke up after retry."
+        $conn.Close()
+    }
+    catch {
+        Write-Error "❌ Could not wake up SQL Server."
+    }
+}
+
+
+
+
+trigger: none  # Don't run on code push
+
+schedules:
+  - cron: "0 6 * * *"  # Every day at 6:00 AM UTC
+    displayName: Wake SQL Daily
+    branches:
+      include:
+        - main
+    always: true
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- task: PowerShell@2
+  inputs:
+    targetType: 'filePath'
+    filePath: 'WakeSql.ps1'
+
+
+
+param(
+    [string]$SqlServer,
+    [string]$Database
+)
+
+try {
+    $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
+    $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
+    $connection.Open()
+    Write-Host "Successfully connected to SQL Server: $SqlServer, Database: $Database"
+} catch {
+    Write-Error "Error connecting to SQL Server: $SqlServer, Database: $Database"
+    Write-Error $_.Exception.Message
+} finally {
+    if ($connection -ne $null -and $connection.State -eq "Open") {
+        $connection.Close()
+    }
+}
+
+
+
+
+
+trigger: none
+
+schedules:
+- cron: "0 6 * * *"
+  displayName: Daily wake-up job
+  branches:
+    include:
+    - main
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- task: PowerShell@2
+  inputs:
+    filePath: '$(Build.SourcesDirectory)/wake-up-script.ps1'
+    arguments: '-SqlServer "$(SqlServer)" -Database "$(Database)"'
