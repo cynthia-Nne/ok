@@ -56,7 +56,7 @@ param(
 )
 
 try {
-    $connectionString = "Server=$SqlServer;Database=$Database;Integrated Security=True;"
+    $connectionString = "Server=tcp:$SqlServer,1433;Initial Catalog=$Database;Integrated Security=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
     $connection = New-Object System.Data.SqlClient.SqlConnection($connectionString)
     $connection.Open()
     Write-Host "Successfully connected to SQL Server: $SqlServer, Database: $Database"
