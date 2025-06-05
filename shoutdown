@@ -90,3 +90,27 @@ steps:
   inputs:
     filePath: '$(Build.SourcesDirectory)/wake-up-script.ps1'
     arguments: '-SqlServer "$(SqlServer)" -Database "$(Database)"'
+
+
+
+
+
+
+stages:
+- stage: WakeUpDatabase
+  displayName: 'Wake Up Database'
+  jobs:
+  - deployment: WakeUpDatabase
+    displayName: 'Wake Up Database'
+    pool:
+      vmImage: 'windows-latest'
+    environment: ${{ parameters.environment }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: PowerShell@2
+            displayName: 'Execute Wake-Up Script'
+            inputs:
+              filePath: '$(powershellScriptsPath)/wake-up-script.ps1'
+              arguments: '-SqlServer "$(sqlServer)" -Database "$(sqlDatabase)"'
