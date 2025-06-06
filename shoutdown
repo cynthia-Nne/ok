@@ -114,3 +114,99 @@ stages:
             inputs:
               filePath: '$(powershellScriptsPath)/wake-up-script.ps1'
               arguments: '-SqlServer "$(sqlServer)" -Database "$(sqlDatabase)"'
+trigger: none
+
+schedules:
+  - cron: "0 6 * * *"
+    
+displayName: Daily wake-up job
+
+branches:
+  include:
+    - "Infrastructure\NDRDataMigration\"
+    - "pipelines\NDR_Datamigration\"
+always: true
+
+pool: 'CISPWA - Dev'
+
+parameters:
+  - name: environment
+    type: string
+    default: "dev"
+    
+variables:
+  resourceGroupName: $()
+  sqlServerName: ''
+  databaseName: ''
+  sqlUsername: ''
+  keyVaultName: 's'
+  
+stages:
+  - stage: WakeUpDatabase
+    displayName: "Wake Up Database"
+    jobs:
+      - job: WakeUpDatabase
+        displayName: "Wake Up Database"
+        pool:
+          vmImage: "windows-latest"
+        steps:
+          # Step to fetch SQL password from Key Vault
+          - task: AzureCLI@2
+            displayName: 'Retrieve Secret from KeyVault'
+            inputs:
+              azureSubscription: 'BST Dev Connection-Cloud Platform'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                Write-Host "Fetching SQL secrets ... "
+                $secret1 = az keyvault secret show --name '' --vault-name '$(keyVaultName)' --query value -o tsv
+                if (!$secret1){
+                  Write-Host "SQL secret fetch failed or returned null ... "
+                } else {
+                  Write-Host "SQL secret fetched, setting variable on pipeline"
+                  Write-Host "##vso[task.setvariable variable=SQL-Admin-Pass-Var;isSecret=true]$secret1"
+                }
+          
+          # Execute the PowerShell script with secrets from Key Vault
+          - task: PowerShell@2
+            displayName: "Execute Wake-Up Script"
+            inputs:
+              filePath: "$(System.DefaultWorkingDirectory)/"
+              arguments: >
+                -SqlServer "$(sqlServerName)" 
+                -Database "$(databaseName)" 
+                -User "$(sqlUsername)" 
+                -Password "$(SQL-Admin-Pass-Var)"
+              failOnStderr: false
+
+
+param(
+    [Parameter(Mandatory=$true)]
+    [string]$SqlServer,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$Database,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$User,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$Password
+)
+
+try {
+    $ConnectionString = "Server=tcp:$SqlServer,1433;Initial Catalog=$Database;User ID=$User;Password=$Password;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+    $Connection = New-Object System.Data.SqlClient.SqlConnection($ConnectionString)
+    $Connection.Open()
+    Write-Host "Successfully connected to SQL Server: $SqlServer, Database: $Database"
+    
+    # Add your database operations here
+    
+} catch {
+    Write-Error "Error connecting to SQL Server: $SqlServer, Database: $Database"
+    Write-Error $_.Exception.Message
+} finally {
+    if ($Connection -ne $null -and $Connection.State -eq "Open") {
+        $Connection.Close()
+    }
+}
