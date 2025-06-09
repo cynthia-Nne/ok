@@ -309,3 +309,224 @@ try {
 catch {
     Write-Error "Error in SQL Server wake-up process: $_"
 }
+
+
+
+
+
+
+
+
+
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "dataFactoryName": {
+      "type": "string",
+      "metadata": {
+        "description": "Data Factory Name"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location of the data factory."
+      }
+    },
+    "integrationRuntimeName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the self-hosted Integration Runtime."
+      }
+    },
+    "virtualNetworkName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the virtual network."
+      }
+    },
+    "subnet": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the subnet for private endpoint."
+      }
+    },
+    "customNetworkInterfaceName": {
+      "type": "string",
+      "defaultValue": "Disabled",
+      "metadata": {
+        "description": "Public Network access for ADF."
+      }
+    },
+    "privateEndpointName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of private endpoint for ADF."
+      }
+    },
+    "privateLinkResource": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource for DataFactory private endpoint."
+      }
+    },
+    "targetSubResource": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Subresource for DataFactory private endpoint."
+      }
+    },
+    "enableMSI": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable MSI for the Data Factory."
+      }
+    },
+    "userAssignedIdentitiesStr": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "User-assigned identities for the Data Factory."
+      }
+    },
+    "systemAssignedIdentity": {
+      "type": "string",
+      "defaultValue": { },
+      "metadata": {
+        "description": "System-assigned identity for the Data Factory."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": { },
+      "metadata": {
+        "description": "Tags for the resources."
+      }
+    },
+    "devOpsProjectName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Azure DevOps project to link."
+      }
+    },
+    "devOpsAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Azure DevOps organization/account."
+      }
+    },
+    "devOpsRepositoryName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the repository in Azure DevOps."
+      }
+    },
+    "devOpsBranchName": {
+      "type": "string",
+      "defaultValue": "main",
+      "metadata": {
+        "description": "Name of the branch in the repository (e.g., main, master, or any other branch)."
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DataFactory/factories",
+      "apiVersion": "2018-06-01",
+      "name": "[parameters('dataFactoryName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "[if(parameters('enableMSI'), if(empty(parameters('userAssignedIdentitiesStr')), 'SystemAssigned', 'SystemAssigned,UserAssigned'), 'None')]",
+        "userAssignedIdentities": "[if(parameters('enableMSI'), json(concat('{\"', parameters('userAssignedIdentities'), '\"}')), json('{}'))]"
+      },
+      "properties": {
+        "publicNetworkAccess": "[toLower(if(parameters('enableMSI'), 'Enabled', 'Disabled'))]",
+        "encryption": "[if(parameters('enableMSI'), json(concat('{\"identity\":{\"userAssignedIdentity\":\"', parameters('userAssignedIdentities'), '\"}}'))]"
+      },
+      "tags": "[parameters('tags')]"
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/managedVirtualNetworks",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('dataFactoryName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', parameters('dataFactoryName'))]"
+      ],
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/repositories",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('dataFactoryName'), '/repo')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', parameters('dataFactoryName'))]"
+      ],
+      "properties": {
+        "type": "AzureDevOpsGit",
+        "accountName": "[parameters('devOpsAccountName')]",
+        "projectName": "[parameters('devOpsProjectName')]",
+        "repositoryName": "[parameters('devOpsRepositoryName')]",
+        "collaborationBranch": "[parameters('devOpsBranchName')]"
+      }
+    },
+    {
+      "type": "Microsoft.DataFactory/factories/integrationRuntimes",
+      "apiVersion": "2018-06-01",
+      "name": "[concat(parameters('dataFactoryName'), '/', parameters('integrationRuntimeName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories/repositories', parameters('dataFactoryName'), 'repo')]"
+      ],
+      "properties": {
+        "type": "SelfHosted",
+        "description": "Self-Hosted Integration Runtime for on-premises data access"
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2021-05-01",
+      "name": "[parameters('privateEndpointName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DataFactory/factories', parameters('dataFactoryName'))]"
+      ],
+      "tags": {},
+      "properties": {
+        "subnet": {
+          "id": "[parameters('subnet')]"
+        },
+        "customNetworkInterfaceName": "[parameters('customNetworkInterfaceName')]",
+        "privateLinkServiceConnections": [
+          {
+            "name": "[parameters('privateEndpointName')]",
+            "properties": {
+              "privateLinkServiceId": "[parameters('privateLinkResource')]",
+              "groupIds": "[parameters('targetSubResource')]"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "dataFactoryName": {
+      "type": "string",
+      "value": "[parameters('dataFactoryName')]"
+    },
+    "dataFactoryPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.DataFactory/factories', parameters('dataFactoryName')), '2018-06-01', 'Full').identity.principalId]"
+    },
+    "integrationRuntimeAuthKey1": {
+      "type": "string",
+      "value": "[listAuthKeys(resourceId('Microsoft.DataFactory/factories/integrationRuntimes', parameters('dataFactoryName'), parameters('integrationRuntimeName')), '2018-06-01').authKey1]"
+    },
+    "integrationRuntimeAuthKey2": {
+      "type": "string",
+      "value": "[listAuthKeys(resourceId('Microsoft.DataFactory/factories/integrationRuntimes', parameters('dataFactoryName'), parameters('integrationRuntimeName')), '2018-06-01').authKey2]"
+    }
+  }
+}
