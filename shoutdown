@@ -210,3 +210,102 @@ try {
         $Connection.Close()
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+[Parameter(Mandatory=$true)]
+[string]$SqlServer,
+
+[Parameter(Mandatory=$true)]
+[string]$Database,
+
+[Parameter(Mandatory=$true)]
+[string]$User,
+
+[Parameter(Mandatory=$true)]
+[string]$Password
+
+# Define max retry attempts and delay between attempts
+$maxRetries = 10
+$retryDelay = 30  # seconds
+$attempt = 1
+$connected = $false
+
+# First check if the SQL Server service is running
+try {
+    # Determine service name (default instance vs named instance)
+    $instanceParts = $SqlServer.Split("\")
+    $serverName = $instanceParts[0]
+    $instanceName = if ($instanceParts.Length -gt 1) { $instanceParts[1] } else { $null }
+    
+    $serviceName = if ([string]::IsNullOrEmpty($instanceName)) { "MSSQLSERVER" } else { "MSSQL`$$instanceName" }
+    
+    # Check service status - may require admin rights
+    $service = Get-Service -Name $serviceName -ComputerName $serverName -ErrorAction SilentlyContinue
+    
+    # If service exists but is not running, try to start it
+    if ($service -and $service.Status -ne 'Running') {
+        Write-Host "SQL Server service is not running. Attempting to start..."
+        Start-Service -Name $serviceName -ComputerName $serverName
+        Start-Sleep -Seconds 10  # Give it time to start
+    }
+    
+    # Now try to connect with retry logic
+    $ConnectionString = "Server=$SqlServer;Initial Catalog=$Database;User ID=$User;Password=$Password;Encrypt=True;TrustServerCertificate=true;Connection Timeout=30;"
+    
+    while (-not $connected -and $attempt -le $maxRetries) {
+        Write-Host "Connection attempt $attempt of $maxRetries..."
+        
+        try {
+            $Connection = New-Object System.Data.SqlClient.SqlConnection($ConnectionString)
+            $Connection.Open()
+            
+            # Check if connection is actually responsive by running a simple query
+            $query = "SELECT 1 AS IsAwake"
+            $command = $Connection.CreateCommand()
+            $command.CommandText = $query
+            $command.CommandTimeout = 15  # Short timeout for the test query
+            $result = $command.ExecuteScalar()
+            
+            Write-Host "Successfully connected to SQL Server: $SqlServer, Database: $Database"
+            $connected = $true
+            
+            # Add your database operations here
+            # For example, you might want to run additional "wake up" operations
+            Write-Host "Database is now awake and responsive"
+            
+            # Close this connection before finishing
+            $Connection.Close()
+        }
+        catch {
+            Write-Host "Attempt $attempt failed: $_"
+            
+            # Clean up any partial connection
+            if ($Connection -ne $null -and $Connection.State -eq 'Open') {
+                $Connection.Close()
+            }
+            
+            # If we haven't reached max retries, wait before trying again
+            if ($attempt -lt $maxRetries) {
+                Write-Host "Waiting $retryDelay seconds before next attempt..."
+                Start-Sleep -Seconds $retryDelay
+            }
+            else {
+                Write-Error "Failed to connect after $maxRetries attempts. Last error: $_"
+            }
+        }
+        
+        $attempt++
+    }
+}
+catch {
+    Write-Error "Error in SQL Server wake-up process: $_"
+}
