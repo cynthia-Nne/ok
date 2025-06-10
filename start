@@ -69,3 +69,97 @@ stages:
                   -User "$(sqlUserName)"
                   -Password "$(SQL-Admin-Pass-VerifiedSecret)"
               failOnStderr: false
+
+
+
+
+
+
+
+
+
+
+
+
+trigger: none
+
+schedules:
+  - cron: "0 6 * * *"
+    displayName: Daily wake-up job
+    branches:
+      include:
+        - infrastructure\VDR\DataMigration*
+        - pipelines\VDR_DataMigration*
+    always: true
+
+pool: 'CI9WVOA - Dev'
+
+parameters:
+  - name: environments
+    type: object
+    default:
+      - dev
+      - fat
+      - sit
+      - uat
+
+stages:
+  - ${{ each env in parameters.environments }}:
+    - stage: MakeUpDatabase_${{ env }}
+      displayName: "Make Up Database - ${{ env }}"
+      jobs:
+        - job: MakeUpDatabase
+          displayName: "Make Up Database"
+          variables:
+            # Hard-code environment-specific variables
+            ${{ if eq(env, 'dev') }}:
+              sqlServerName: ".database.windows.net"
+              databaseName: "voala"
+              secretName: "Admin-Pass-dev"
+            ${{ if eq(env, 'fat') }}:
+              sqlServerName: ".database.windows.net"
+              databaseName: "voalasqldb-"
+              secretName: "Admin-Pass-fat"
+            ${{ if eq(env, 'sit') }}:
+              sqlServerName: ".database.windows.net"
+              databaseName: "voalasqldb"
+              secretName: "-Admin-Pass-sit"
+            ${{ if eq(env, 'uat') }}:
+              sqlServerName: ".database.windows.net"
+              databaseName: "voalasqldb"
+              secretName: "Admin-Pass-uat"
+            # Common variables
+            keyVaultName: "vst-las-kvt-platform"
+            sqlUserName: "vossadmin"
+          steps:
+            # Step to fetch SQL password from Key Vault
+            - task: AzureCLI@2
+              displayName: "Retrieve Secret from KeyVault"
+              inputs:
+                azureSubscription: 'WST DevPlatform'
+                scriptType: 'ps'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  # Fetching SQL secrets for the specific environment
+                  $secret = az keyvault secret show --name "$(secretName)" --vault-name "$(keyVaultName)" --query value -o tsv
+                  
+                  if (!$secret) {
+                    Write-Host "SQL secret fetch failed or returned null..."
+                    exit 1
+                  } else {
+                    Write-Host "SQL secret fetched, setting variable on pipeline"
+                    echo "##vso[task.setvariable variable=SQL-Admin-Pass-VerifiedSecret]$secret"
+                  }
+
+            # Execute the PowerShell script with secrets from Key Vault
+            - task: PowerShell@2
+              displayName: "Execute Make-Up Script"
+              inputs:
+                targetType: filePath
+                filePath: "$(Build.Sources"
+                arguments: >
+                  -SqlServer "$(sqlServerName)"
+                  -Database "$(databaseName)"
+                  -User "$(sqlUserName)"
+                  -Password "$(SQL-Admin-Pass-VerifiedSecret)"
+              failOnStderr: false
