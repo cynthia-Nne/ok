@@ -572,3 +572,49 @@ catch {
     }
   }
 }
+
+
+
+
+
+
+
+
+ {
+      "condition": true,
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "linkedTemplateForAzureDevOps",
+      "dependsOn": [
+        "[variables('factoryId')]"
+      ],
+      "properties": {
+        "mode": "Incremental",
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {},
+          "variables": {},
+          "resources": [
+            {
+              "type": "Microsoft.DataFactory/factories/repositories",
+              "apiVersion": "2018-06-01",
+              "name": "[concat(parameters('dataFactoryName'), '/repo')]",
+              "properties": {
+                "type": "FactoryVSTSConfiguration",
+                "accountName": "[parameters('devOpsAccountName')]",
+                "projectName": "[parameters('devOpsProjectName')]",
+                "repositoryName": "[parameters('devOpsRepositoryName')]",
+                "collaborationBranch": "[parameters('devOpsBranchName')]",
+                "rootFolder": "/"
+              }
+            }
+          ]
+        }
+      }
+    },
+
+
+
+
+"linkedTemplateForAzureDevOps"
