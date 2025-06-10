@@ -618,3 +618,113 @@ catch {
 
 
 "linkedTemplateForAzureDevOps"
+
+
+
+
+
+
+# azure-pipelines.yml
+trigger:
+  - main  # or whatever branch you want to trigger the pipeline
+
+pool:
+  vmImage: 'windows-latest'  # or use 'ubuntu-latest' if using Azure CLI
+
+variables:
+  resourceGroupName: 'YourResourceGroupName'
+  dataFactoryName: 'YourDataFactoryName'
+  location: 'YourAzureRegion'
+  integrationRuntimeName: 'YourIRName'
+  devOpsAccountName: 'YourDevOpsAccount'
+  devOpsProjectName: 'YourDevOpsProject'
+  devOpsRepositoryName: 'YourRepoName'
+  devOpsBranchName: 'main'  # or your preferred branch
+  templateFile: './path/to/your/template.json'
+  parameterFile: './path/to/your/parameters.json'
+
+stages:
+- stage: DeployDataFactory
+  jobs:
+  - job: DeployInfrastructure
+    steps:
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy Data Factory ARM Template'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: 'YourAzureServiceConnection'
+        subscriptionId: 'YourSubscriptionId'
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: '$(resourceGroupName)'
+        location: '$(location)'
+        templateLocation: 'Linked artifact'
+        csmFile: '$(templateFile)'
+        csmParametersFile: '$(parameterFile)'
+        deploymentMode: 'Incremental'
+        deploymentOutputs: 'armOutputs'
+
+    - task: PowerShell@2
+      displayName: 'Parse ARM Outputs'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $armOutputsString = '$(armOutputs)'
+          $armOutputs = $armOutputsString | ConvertFrom-Json
+          $dataFactoryName = $armOutputs.dataFactoryName.value
+          Write-Host "##vso[task.setvariable variable=deployedDataFactoryName]$dataFactoryName"
+
+    - task: AzurePowerShell@5
+      displayName: 'Configure Azure DevOps Integration'
+      inputs:
+        azureSubscription: 'YourAzureServiceConnection'
+        ScriptType: 'InlineScript'
+        Inline: |
+          # Configure the Azure DevOps repository
+          Write-Host "Configuring Azure DevOps repository integration..."
+          $repoParams = @{
+              FactoryName = "$(deployedDataFactoryName)"
+              ResourceGroupName = "$(resourceGroupName)"
+              AccountName = "$(devOpsAccountName)"
+              ProjectName = "$(devOpsProjectName)"
+              RepositoryName = "$(devOpsRepositoryName)"
+              CollaborationBranch = "$(devOpsBranchName)"
+              RootFolder = "/"
+              Type = "FactoryVSTSConfiguration"
+          }
+          Set-AzDataFactoryV2GitHubConfiguration @repoParams
+          
+          # Wait a bit for the DevOps integration to complete
+          Write-Host "Waiting for DevOps integration to complete..."
+          Start-Sleep -Seconds 30
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
+
+    - task: AzurePowerShell@5
+      displayName: 'Create Integration Runtime and Get Keys'
+      inputs:
+        azureSubscription: 'YourAzureServiceConnection'
+        ScriptType: 'InlineScript'
+        Inline: |
+          # Create the Self-Hosted Integration Runtime
+          Write-Host "Creating Self-Hosted Integration Runtime..."
+          $irParams = @{
+              ResourceGroupName = "$(resourceGroupName)"
+              DataFactoryName = "$(deployedDataFactoryName)"
+              Name = "$(integrationRuntimeName)"
+              Type = "SelfHosted"
+              Description = "Self-Hosted Integration Runtime for on-premises data access"
+          }
+          $ir = Set-AzDataFactoryV2IntegrationRuntime @irParams
+          
+          # Get the Integration Runtime keys
+          Write-Host "Retrieving Integration Runtime keys..."
+          $keys = Get-AzDataFactoryV2IntegrationRuntimeKey -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(deployedDataFactoryName)" -Name "$(integrationRuntimeName)"
+          
+          # Output the keys to pipeline variables
+          Write-Host "##vso[task.setvariable variable=IRAuthKey1;isOutput=true]$($keys.AuthKey1)"
+          Write-Host "##vso[task.setvariable variable=IRAuthKey2;isOutput=true]$($keys.AuthKey2)"
+          
+          # Also output for logging (be careful with sensitive data in logs)
+          Write-Host "Integration Runtime Keys retrieved successfully!"
+        azurePowerShellVersion: 'LatestVersion'
+        pwsh: true
