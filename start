@@ -1,0 +1,71 @@
+trigger: none
+
+schedules:
+  - cron: "0 6 * * *"
+    displayName: Daily wake-up job
+    branches:
+      include:
+        - infrastructure\VDR\DataMigration*
+        - pipelines\VDR_DataMigration*
+    always: true
+
+pool: 'CI9WVOA - Dev'
+
+parameters:
+  - name: environments
+    type: object
+    default:
+      - dev
+      - fat
+      - sit
+      - ust
+
+variables:
+  # Just the base path for variables
+  - name: variablesBasePath
+    value: 'pipelines/InRule/variables'
+
+stages:
+  - ${{ each env in parameters.environments }}:
+    - stage: MakeUpDatabase_${{ env }}
+      displayName: "Make Up Database - ${{ env }}"
+      variables:
+        # Load environment-specific variables
+        - template: $(variablesBasePath)/${{ env }}/.yaml
+        # Load shared variables
+        - template: $(variablesBasePath)/shared/-vars.yaml
+      jobs:
+        - job: MakeUpDatabase
+          displayName: "Make Up Database"
+          steps:
+            # Step to fetch SQL password from Key Vault
+            - task: AzureCLI@2
+              displayName: "Retrieve Secret from KeyVault"
+              inputs:
+                azureSubscription: 'WST Dev'
+                scriptType: 'ps'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  # Fetching SQL secrets for the specific environment
+                  $secret = az keyvault secret show --name "InRule-SQL-Admin-Pass-${{ env }}" --vault-name "$(keyVaultName)" --query value -o tsv
+                  
+                  if (!$secret) {
+                    Write-Host "SQL secret fetch failed or returned null..."
+                    exit 1
+                  } else {
+                    Write-Host "SQL secret fetched, setting variable on pipeline"
+                    echo "##vso[task.setvariable variable=SQL-Admin-Pass-VerifiedSecret]$secret"
+                  }
+
+            # Execute the PowerShell script with secrets from Key Vault
+            - task: PowerShell@2
+              displayName: "Execute Make-Up Script"
+              inputs:
+                targetType: filePath
+                filePath: "$(Build.SourcesDirectory"
+                arguments: >
+                  -SqlServer "$(sqlServerName)"
+                  -Database "$(databaseName)"
+                  -User "$(sqlUserName)"
+                  -Password "$(SQL-Admin-Pass-VerifiedSecret)"
+              failOnStderr: false
