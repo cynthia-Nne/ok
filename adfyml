@@ -129,3 +129,84 @@ Second option to remove the pws download
       }
     azurePowerShellVersion: 'LatestVersion'
     pwsh: true
+
+
+
+
+
+
+
+
+
+
+
+- task: AzurePowerShell@5
+  displayName: 'Configure Azure DevOps Integration for ADF'
+  inputs:
+    azureSubscription: ''
+    ScriptType: 'InlineScript'
+    Inline: |
+      # Use REST API approach to configure Git integration
+      $token = (Get-AzAccessToken).Token
+      $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type' = 'application/json'
+      }
+      
+      # Get the current subscription ID
+      $subscriptionId = (Get-AzContext).Subscription.Id
+      Write-Host "Using subscription ID: $subscriptionId"
+      
+      # Resource group and data factory names
+      $resourceGroup = ""
+      $dataFactoryName = ""
+      
+      # Build the URL for the REST API call
+      $url = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.DataFactory/factories/$dataFactoryName/configureFactoryRepo?api-version=2018-06-01"
+      
+      # Create the request body
+      $body = @{
+        factoryResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.DataFactory/factories/$dataFactoryName"
+        repoConfiguration = @{
+          accountName = ""
+          repositoryName = ""
+          collaborationBranch = "
+          rootFolder = "/"
+          type = ""
+          projectName = ""
+        }
+      } | ConvertTo-Json -Depth 10
+      
+      Write-Host "Sending request to configure Git integration..."
+      
+      try {
+        # Make the REST API call
+        $response = Invoke-RestMethod -Uri $url -Method PUT -Headers $headers -Body $body
+        Write-Host "Git integration configured successfully"
+      } catch {
+        Write-Host "Error during Git configuration: $_"
+        Write-Host "Error details: $($_.Exception.Message)"
+      }
+      
+      # Wait a bit for the configuration to take effect
+      Write-Host "Waiting for configuration to apply..."
+      Start-Sleep -Seconds 30
+      
+      # Try to get the integration runtime keys using REST API
+      try {
+        $irUrl = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.DataFactory/factories/$dataFactoryName/integrationRuntimes//listAuthKeys?api-version=2018-06-01"
+        $keysResponse = Invoke-RestMethod -Uri $irUrl -Method POST -Headers $headers
+        
+        if ($keysResponse) {
+          Write-Host "Integration Runtime keys retrieved successfully"
+          Write-Host "##vso[task.setvariable variable=IRAuthKey1;isOutput=true]$($keysResponse.authKey1)"
+          Write-Host "##vso[task.setvariable variable=IRAuthKey2;isOutput=true]$($keysResponse.authKey2)"
+        } else {
+          Write-Host "Could not retrieve Integration Runtime keys"
+        }
+      } catch {
+        Write-Host "Error retrieving Integration Runtime keys: $_"
+        Write-Host "Error details: $($_.Exception.Message)"
+      }
+    azurePowerShellVersion: 'LatestVersion'
+    pwsh: false  # Important: Set this to false to use Windows PowerShell instead of PowerShell Core
