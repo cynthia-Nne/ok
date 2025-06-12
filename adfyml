@@ -1,0 +1,39 @@
+- task: AzurePowerShell@5
+  displayName: 'Configure Azure DevOps Integration for ADF'
+  inputs:
+    azureSubscription: 
+    ScriptType: 'InlineScript'
+    Inline: |
+      # Install required module if needed
+      if (-not (Get-Module -ListAvailable -Name Az.DataFactory)) {
+        Install-Module -Name Az.DataFactory -Force -AllowClobber -Scope CurrentUser
+      }
+      
+      # Configure Git repository
+      $gitParams = @{
+        ResourceGroupName = "$(resourceGroupName)"
+        DataFactoryName = "$(dataFactoryName)"
+        AccountName = ""
+        ProjectName = ""
+        RepositoryName = ""
+        CollaborationBranch = ""
+        RootFolder = "/"
+        Type = "
+      }
+      
+      Write-Host "Configuring Azure DevOps integration for Data Factory..."
+      Set-AzDataFactoryV2GitHubConfiguration @gitParams
+      
+      # Wait for Git configuration to apply
+      Write-Host "Waiting for Git configuration to apply..."
+      Start-Sleep -Seconds 30
+      
+      # Get Integration Runtime keys
+      Write-Host "Retrieving Integration Runtime keys..."
+      $keys = Get-AzDataFactoryV2IntegrationRuntimeKey -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name ""
+      
+      # Set output variables
+      Write-Host "##vso[task.setvariable variable=IRAuthKey1;isOutput=true]$($keys.AuthKey1)"
+      Write-Host "##vso[task.setvariable variable=IRAuthKey2;isOutput=true]$($keys.AuthKey2)"
+    azurePowerShellVersion: 'LatestVersion'
+    pwsh: true
