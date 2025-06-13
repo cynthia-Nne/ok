@@ -319,3 +319,61 @@ Second option to remove the pws download
       }
     azurePowerShellVersion: 'LatestVersion'
     pwsh: false
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- task: AzureResourceManagerTemplateDeployment@3
+  displayName: 'Deploy Data Factory IR in Git Mode'
+  inputs:
+    deploymentScope: 'Resource Group'
+    azureResourceManagerConnection: ''
+    subscriptionId: ''
+    action: 'Create Or Update Resource Group'
+    resourceGroupName: ''
+    location: 'uksouth'
+    templateLocation: 'Inline'
+    csmFile: ''
+    csmParametersFile: ''
+    deploymentMode: 'Incremental'
+    deploymentName: 'GitAwareDeployment'
+    overrideParameters: '-factoryName "" -integrationRuntimeName ""'
+    template: |
+      {
+        "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+          "factoryName": {
+            "type": "string"
+          },
+          "integrationRuntimeName": {
+            "type": "string"
+          }
+        },
+        "variables": {},
+        "resources": [
+          {
+            "type": "Microsoft.DataFactory/factories/integrationRuntimes",
+            "apiVersion": "2018-06-01",
+            "name": "[concat(parameters('factoryName'), '/', parameters('integrationRuntimeName'))]",
+            "properties": {
+              "type": "SelfHosted",
+              "description": "Self-Hosted Integration Runtime for on-premises data access"
+            }
+          }
+        ]
+      }
+
+
