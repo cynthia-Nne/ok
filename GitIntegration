@@ -1,0 +1,131 @@
+# Replace the AzurePowerShell task with this REST API approach using basic PowerShell
+- task: PowerShell@2
+  displayName: 'Configure Azure DevOps Integration for ADF'
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Variables from dev-vars.yml
+      $resourceGroup = "$(resourceGroupName)"
+      $dataFactoryName = "$(dataFactoryName)"
+      $accountName = "$(accountName)"
+      $projectName = "$(projectName)"
+      $repositoryName = "$(repositoryName)"
+      $collaborationBranch = "$(collaborationBranch)"
+      $rootFolder = "$(rootFolder)"
+      $type = "$(type)"
+      $subscriptionId = "$(subscriptionId)"
+      
+      Write-Host "Using resource group: $resourceGroup"
+      Write-Host "Using data factory: $dataFactoryName"
+      
+      # Get Azure access token using the Azure CLI (which is pre-installed)
+      $token = (az account get-access-token --query accessToken -o tsv)
+      $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type' = 'application/json'
+      }
+      
+      # Build the URL for the REST API call
+      $url = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.DataFactory/factories/$dataFactoryName/configureFactoryRepo?api-version=2018-06-01"
+      
+      # Create the request body
+      $bodyObj = @{
+        factoryResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.DataFactory/factories/$dataFactoryName"
+        repoConfiguration = @{
+          accountName = $accountName
+          projectName = $projectName
+          repositoryName = $repositoryName
+          collaborationBranch = $collaborationBranch
+          rootFolder = $rootFolder
+          type = $type
+        }
+      }
+      
+      $body = $bodyObj | ConvertTo-Json -Depth 10
+      
+      Write-Host "Request body: $body"
+      Write-Host "Sending request to configure Git integration..."
+      
+      try {
+        # Make the REST API call using Invoke-WebRequest (no Az modules needed)
+        $response = Invoke-WebRequest -Uri $url -Method PUT -Headers $headers -Body $body -UseBasicParsing
+        Write-Host "Git integration configured successfully"
+        Write-Host "Response status: $($response.StatusCode)"
+      } catch {
+        Write-Host "Error during Git configuration: $_"
+      }
+
+# Keep your ARM template deployment task
+- task: AzureResourceManagerTemplateDeployment@3
+  displayName: 'Deploy Data Factory IR in Git Mode'
+  inputs:
+    deploymentScope: 'Resource Group'
+    azureResourceManagerConnection: ''
+    subscriptionId: ''
+    action: 'Create Or Update Resource Group'
+    resourceGroupName: ''
+    location: 'uksouth'
+    templateLocation: 'Inline'
+    csmFile: ''
+    csmParametersFile: ''
+    deploymentMode: 'Incremental'
+    deploymentName: 'GitAwareDeployment'
+    overrideParameters: '-factoryName "$(dataFactoryName)" -integrationRuntimeName "$(integrationRuntimeName)"'
+    template: |
+      {
+        "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+        "contentVersion": "1.0.0.0",
+        "parameters": {
+          "factoryName": {
+            "type": "string"
+          },
+          "integrationRuntimeName": {
+            "type": "string"
+          }
+        },
+        "variables": {},
+        "resources": [
+          {
+            "type": "Microsoft.DataFactory/factories/integrationRuntimes",
+            "apiVersion": "2018-06-01",
+            "name": "[concat(parameters('factoryName'), '/', parameters('integrationRuntimeName'))]",
+            "properties": {
+              "type": "SelfHosted",
+              "description": "Self-Hosted Integration Runtime for on-premises data access"
+            }
+          }
+        ]
+      }
+
+# Add a simple PowerShell task to get the keys without Az modules
+- task: PowerShell@2
+  displayName: 'Get Integration Runtime Keys'
+  inputs:
+    targetType: 'inline'
+    script: |
+      # Variables
+      $resourceGroup = "$(resourceGroupName)"
+      $dataFactoryName = "$(dataFactoryName)"
+      $irName = "$(integrationRuntimeName)"
+      $subscriptionId = "$(subscriptionId)"
+      
+      # Get token from az cli
+      $token = (az account get-access-token --query accessToken -o tsv)
+      $headers = @{
+        'Authorization' = "Bearer $token"
+        'Content-Type' = 'application/json'
+      }
+      
+      # Get the IR keys via REST API
+      $url = "https://management.azure.com/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.DataFactory/factories/$dataFactoryName/integrationRuntimes/$irName/listAuthKeys?api-version=2018-06-01"
+      
+      try {
+        $response = Invoke-WebRequest -Uri $url -Method POST -Headers $headers -UseBasicParsing
+        $keys = $response.Content | ConvertFrom-Json
+        
+        Write-Host "Integration Runtime keys retrieved successfully"
+        Write-Host "##vso[task.setvariable variable=IRAuthKey1;isOutput=true]$($keys.authKey1)"
+        Write-Host "##vso[task.setvariable variable=IRAuthKey2;isOutput=true]$($keys.authKey2)"
+      } catch {
+        Write-Host "Error retrieving Integration Runtime keys: $_"
+      }
