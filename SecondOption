@@ -1,0 +1,499 @@
+# Azure Data Factory DevOps Pipeline - ARM Template Deployment with Authentication Fix
+# This pipeline uses your ARM templates and fixes all authentication/module issues
+
+trigger:
+- main
+
+variables:
+  # DEPLOYMENT CONFIGURATION - Update these with your actual values
+  azureSubscription: 'your-service-connection-name'        # ⬅️ CRITICAL: Must match your service connection name exactly
+  subscriptionId: 'your-subscription-id'                   # Your Azure subscription ID
+  resourceGroupName: 'your-resource-group'                 # Target resource group name
+  dataFactoryName: 'your-data-factory-name'               # Your Data Factory name
+  integrationRuntimeName: 'your-integration-runtime-name'  # Your Integration Runtime name
+  location: 'uksouth'                                      # Azure region
+  tenantId: 'your-tenant-id'                              # Your Azure tenant ID
+  
+  # CROSS-PROJECT GIT INTEGRATION - Update these for your target project
+  gitOrganizationName: 'your-target-devops-org'           # Target Azure DevOps organization
+  gitProjectName: 'your-target-project-name'              # Target project where ADF code will be stored
+  gitRepositoryName: 'your-target-repository-name'        # Target repository for ADF
+  gitCollaborationBranch: 'main'                          # Main collaboration branch
+  gitRootFolder: '/'                                      # Root folder in the repository
+
+pool:
+  vmImage: 'windows-2022'  # Use specific Windows version for better compatibility
+
+stages:
+- stage: Build
+  displayName: 'Build and Validate'
+  jobs:
+  - job: BuildJob
+    displayName: 'Build ADF Artifacts'
+    steps:
+    
+    # Verify Azure authentication first
+    - task: AzureCLI@2
+      displayName: 'Verify Azure Authentication'
+      inputs:
+        azureSubscription: '$(azureSubscription)'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          Write-Host "=== Verifying Azure CLI Authentication ===" -ForegroundColor Green
+          Write-Host "Testing Azure CLI access..." -ForegroundColor Yellow
+          az account show --output table
+          az account set --subscription "$(subscriptionId)"
+          Write-Host "✓ Azure CLI authentication verified successfully" -ForegroundColor Green
+        addSpnToEnvironment: true
+        useGlobalConfig: true
+
+    # Install required Azure PowerShell modules
+    - task: PowerShell@2
+      displayName: 'Install Required Azure Modules'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "=== Installing Required Azure PowerShell Modules ===" -ForegroundColor Green
+          
+          # Set PowerShell execution policy
+          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+          Write-Host "✓ PowerShell execution policy set to Bypass" -ForegroundColor Green
+          
+          # Configure PowerShell Gallery as trusted
+          if ((Get-PSRepository -Name "PSGallery").InstallationPolicy -ne "Trusted") {
+              Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted
+              Write-Host "✓ PSGallery set as trusted repository" -ForegroundColor Green
+          }
+          
+          # Install required modules with force to avoid conflicts
+          $modules = @('Az.Accounts', 'Az.Profile', 'Az.DataFactory', 'Az.Resources')
+          
+          foreach ($module in $modules) {
+              try {
+                  Write-Host "Processing module: $module" -ForegroundColor Yellow
+                  
+                  # Uninstall old conflicting versions
+                  $oldVersions = Get-Module -ListAvailable -Name $module | Where-Object { $_.Version -lt [Version]"2.0.0" }
+                  if ($oldVersions) {
+                      Write-Host "  Removing old versions of $module" -ForegroundColor Cyan
+                      $oldVersions | Uninstall-Module -Force -ErrorAction SilentlyContinue
+                  }
+                  
+                  # Install latest version
+                  if (!(Get-Module -ListAvailable -Name $module | Where-Object { $_.Version -ge [Version]"2.0.0" })) {
+                      Write-Host "  Installing $module..." -ForegroundColor Yellow
+                      Install-Module -Name $module -Force -AllowClobber -Scope CurrentUser -Repository PSGallery
+                  } else {
+                      Write-Host "  $module already installed" -ForegroundColor Green
+                  }
+                  
+                  # Import module
+                  Import-Module -Name $module -Force
+                  $moduleInfo = Get-Module -Name $module
+                  Write-Host "  ✓ $module version $($moduleInfo.Version) loaded successfully" -ForegroundColor Green
+                  
+              } catch {
+                  Write-Error "Failed to install/import $module : $($_.Exception.Message)"
+                  throw
+              }
+          }
+          
+          Write-Host "=== All required modules installed successfully ===" -ForegroundColor Green
+        pwsh: false
+
+    # Validate ARM templates exist
+    - task: PowerShell@2
+      displayName: 'Validate ARM Template Files'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "=== Validating ARM Template Files ===" -ForegroundColor Yellow
+          
+          $templateFile = "$(Build.SourcesDirectory)/ARMTemplateForFactory.json"
+          $parametersFile = "$(Build.SourcesDirectory)/ARMTemplateParametersForFactory.json"
+          
+          if (Test-Path $templateFile) {
+              Write-Host "✓ ARM template found: $templateFile" -ForegroundColor Green
+              $templateContent = Get-Content $templateFile -Raw | ConvertFrom-Json
+              Write-Host "  Template schema: $($templateContent.'$schema')" -ForegroundColor Cyan
+          } else {
+              Write-Error "❌ ARM template not found: $templateFile"
+              Write-Host "Expected ARM template files in repository root:" -ForegroundColor Yellow
+              Write-Host "- ARMTemplateForFactory.json" -ForegroundColor White
+              Write-Host "- ARMTemplateParametersForFactory.json" -ForegroundColor White
+              throw "ARM template files missing"
+          }
+          
+          if (Test-Path $parametersFile) {
+              Write-Host "✓ ARM parameters found: $parametersFile" -ForegroundColor Green
+              $parametersContent = Get-Content $parametersFile -Raw | ConvertFrom-Json
+              Write-Host "  Parameters available: $($parametersContent.parameters.PSObject.Properties.Name -join ', ')" -ForegroundColor Cyan
+          } else {
+              Write-Warning "⚠️ ARM parameters file not found: $parametersFile"
+              Write-Host "Will deploy with default template parameters" -ForegroundColor Yellow
+          }
+        pwsh: false
+
+    # Validate ARM template deployment
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Validate ARM Template'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: '$(azureSubscription)'
+        subscriptionId: '$(subscriptionId)'
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: '$(resourceGroupName)'
+        location: '$(location)'
+        templateLocation: 'Linked artifact'
+        csmFile: '$(Build.SourcesDirectory)/ARMTemplateForFactory.json'
+        csmParametersFile: '$(Build.SourcesDirectory)/ARMTemplateParametersForFactory.json'
+        overrideParameters: |
+          -factoryName "$(dataFactoryName)" 
+          -location "$(location)"
+        deploymentMode: 'Validation'
+        deploymentName: 'ADF-Template-Validation-$(Build.BuildNumber)'
+
+    # Publish ARM templates as artifacts
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish ARM Templates'
+      inputs:
+        PathtoPublish: '$(Build.SourcesDirectory)'
+        ArtifactName: 'ARMTemplates'
+        publishLocation: 'Container'
+
+- stage: Deploy
+  displayName: 'Deploy to Azure'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployADF
+    displayName: 'Deploy Azure Data Factory'
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          
+          # Ensure PowerShell modules are available in deployment
+          - task: PowerShell@2
+            displayName: 'Setup Azure PowerShell Modules for Deployment'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "=== Setting up Azure PowerShell modules for deployment ===" -ForegroundColor Green
+                
+                # Set execution policy
+                Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+                
+                # Set PSGallery as trusted
+                Set-PSRepository -Name "PSGallery" -InstallationPolicy Trusted
+                
+                # Install and import required modules
+                $modules = @('Az.Accounts', 'Az.Profile', 'Az.DataFactory', 'Az.Resources')
+                
+                foreach ($module in $modules) {
+                    if (!(Get-Module -ListAvailable -Name $module)) {
+                        Write-Host "Installing module: $module" -ForegroundColor Yellow
+                        Install-Module -Name $module -Force -AllowClobber -Scope CurrentUser
+                    }
+                    Import-Module -Name $module -Force
+                    Write-Host "✓ Module $module is ready" -ForegroundColor Green
+                }
+                
+                # Verify modules are loaded
+                Write-Host "Loaded Az modules:" -ForegroundColor Cyan
+                Get-Module Az.* | Select-Object Name, Version | Format-Table
+              pwsh: false
+
+          # Stop ADF triggers before deployment (if any exist)
+          - task: AzurePowerShell@5
+            displayName: 'Stop ADF Triggers Before Deployment'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "=== Stopping ADF Triggers Before Deployment ===" -ForegroundColor Yellow
+                
+                try {
+                    # Check if Data Factory exists
+                    $df = Get-AzDataFactoryV2 -ResourceGroupName "$(resourceGroupName)" -Name "$(dataFactoryName)" -ErrorAction SilentlyContinue
+                    
+                    if ($df) {
+                        Write-Host "Data Factory exists, checking for triggers..." -ForegroundColor Cyan
+                        
+                        # Get all triggers
+                        $triggers = Get-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -ErrorAction SilentlyContinue
+                        
+                        if ($triggers) {
+                            foreach ($trigger in $triggers) {
+                                if ($trigger.RuntimeState -eq "Started") {
+                                    Write-Host "Stopping trigger: $($trigger.Name)" -ForegroundColor Yellow
+                                    Stop-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name $trigger.Name -Force
+                                    Write-Host "✓ Stopped trigger: $($trigger.Name)" -ForegroundColor Green
+                                }
+                            }
+                        } else {
+                            Write-Host "No triggers found to stop" -ForegroundColor Cyan
+                        }
+                    } else {
+                        Write-Host "Data Factory doesn't exist yet - no triggers to stop" -ForegroundColor Cyan
+                    }
+                } catch {
+                    Write-Warning "Error checking/stopping triggers: $($_.Exception.Message)"
+                    Write-Host "Continuing with deployment..." -ForegroundColor Yellow
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Deploy ARM template
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Data Factory ARM Template'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: '$(azureSubscription)'
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: '$(resourceGroupName)'
+              location: '$(location)'
+              templateLocation: 'Linked artifact'
+              csmFile: '$(Pipeline.Workspace)/ARMTemplates/ARMTemplateForFactory.json'
+              csmParametersFile: '$(Pipeline.Workspace)/ARMTemplates/ARMTemplateParametersForFactory.json'
+              overrideParameters: |
+                -factoryName "$(dataFactoryName)" 
+                -location "$(location)"
+                -integrationRuntimeName "$(integrationRuntimeName)"
+              deploymentMode: 'Incremental'
+              deploymentName: 'ADF-Deployment-$(Build.BuildNumber)'
+              deploymentOutputs: 'ARMOutputs'
+
+          # Configure Self-Hosted Integration Runtime (if not in ARM template)
+          - task: AzurePowerShell@5
+            displayName: 'Configure Self-Hosted Integration Runtime'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "=== Configuring Self-Hosted Integration Runtime ===" -ForegroundColor Yellow
+                
+                try {
+                    # Check if Integration Runtime exists
+                    $ir = Get-AzDataFactoryV2IntegrationRuntime -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name "$(integrationRuntimeName)" -ErrorAction SilentlyContinue
+                    
+                    if (-not $ir) {
+                        Write-Host "Creating Self-Hosted Integration Runtime: $(integrationRuntimeName)" -ForegroundColor Yellow
+                        
+                        # Create Self-Hosted Integration Runtime
+                        Set-AzDataFactoryV2IntegrationRuntime -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name "$(integrationRuntimeName)" -Type SelfHosted -Description "Self-Hosted Integration Runtime for on-premises data access"
+                        
+                        Write-Host "✓ Integration Runtime created successfully" -ForegroundColor Green
+                    } else {
+                        Write-Host "✓ Integration Runtime already exists" -ForegroundColor Green
+                    }
+                    
+                    # Get authentication keys
+                    Write-Host "`nRetrieving Integration Runtime authentication keys..." -ForegroundColor Yellow
+                    $keys = Get-AzDataFactoryV2IntegrationRuntimeKey -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name "$(integrationRuntimeName)"
+                    
+                    Write-Host ""
+                    Write-Host "=============================================================" -ForegroundColor Cyan
+                    Write-Host "    INTEGRATION RUNTIME AUTHENTICATION KEYS" -ForegroundColor Cyan
+                    Write-Host "=============================================================" -ForegroundColor Cyan
+                    Write-Host "Primary Key:   $($keys.AuthKey1)" -ForegroundColor Yellow
+                    Write-Host "Secondary Key: $($keys.AuthKey2)" -ForegroundColor Yellow
+                    Write-Host "=============================================================" -ForegroundColor Cyan
+                    Write-Host "⚠️  SAVE THESE KEYS FOR ON-PREMISES IR INSTALLATION!" -ForegroundColor Red
+                    Write-Host "=============================================================" -ForegroundColor Cyan
+                    
+                    # Display IR status
+                    $irStatus = Get-AzDataFactoryV2IntegrationRuntime -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name "$(integrationRuntimeName)"
+                    Write-Host "`nIntegration Runtime Details:" -ForegroundColor Cyan
+                    Write-Host "  Name: $($irStatus.Name)" -ForegroundColor White
+                    Write-Host "  Type: $($irStatus.Type)" -ForegroundColor White
+                    Write-Host "  State: $($irStatus.State)" -ForegroundColor White
+                    
+                } catch {
+                    Write-Error "Failed to configure Integration Runtime: $($_.Exception.Message)"
+                    throw
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Configure Cross-Project Git Integration
+          - task: AzurePowerShell@5
+            displayName: 'Configure Cross-Project Git Integration'
+            condition: succeeded()
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "=== Configuring Cross-Project Git Integration ===" -ForegroundColor Yellow
+                
+                try {
+                    # Use target project variables (not current pipeline project)
+                    $targetOrganization = "$(gitOrganizationName)"
+                    $targetProject = "$(gitProjectName)"
+                    $targetRepository = "$(gitRepositoryName)"
+                    $collaborationBranch = "$(gitCollaborationBranch)"
+                    $rootFolder = "$(gitRootFolder)"
+                    
+                    Write-Host "Current Deployment Pipeline:" -ForegroundColor Cyan
+                    Write-Host "  Organization: $(System.TeamFoundationCollectionUri)" -ForegroundColor White
+                    Write-Host "  Project: $(System.TeamProject)" -ForegroundColor White
+                    Write-Host "  Repository: $(Build.Repository.Name)" -ForegroundColor White
+                    
+                    Write-Host "`nTarget ADF Git Configuration:" -ForegroundColor Cyan
+                    Write-Host "  Organization: $targetOrganization" -ForegroundColor Yellow
+                    Write-Host "  Project: $targetProject" -ForegroundColor Yellow
+                    Write-Host "  Repository: $targetRepository" -ForegroundColor Yellow
+                    Write-Host "  Branch: $collaborationBranch" -ForegroundColor Yellow
+                    Write-Host "  Root Folder: $rootFolder" -ForegroundColor Yellow
+                    
+                    # Validate target project variables are set
+                    if ([string]::IsNullOrWhiteSpace($targetOrganization) -or 
+                        [string]::IsNullOrWhiteSpace($targetProject) -or 
+                        [string]::IsNullOrWhiteSpace($targetRepository) -or
+                        $targetOrganization -eq 'your-target-devops-org' -or
+                        $targetProject -eq 'your-target-project-name' -or
+                        $targetRepository -eq 'your-target-repository-name') {
+                        
+                        Write-Warning "Target Git configuration variables are not properly set."
+                        Write-Host "`nTo configure Git integration, update these pipeline variables:" -ForegroundColor Yellow
+                        Write-Host "- gitOrganizationName: 'your-actual-org'" -ForegroundColor White
+                        Write-Host "- gitProjectName: 'your-actual-project'" -ForegroundColor White  
+                        Write-Host "- gitRepositoryName: 'your-actual-repo'" -ForegroundColor White
+                        Write-Host "`nSkipping automated Git configuration..." -ForegroundColor Yellow
+                        return
+                    }
+                    
+                    # Configure the repository for the target project
+                    $repoConfig = @{
+                        type = "FactoryVSTSConfiguration"
+                        accountName = $targetOrganization
+                        projectName = $targetProject
+                        repositoryName = $targetRepository
+                        collaborationBranch = $collaborationBranch
+                        rootFolder = $rootFolder
+                        tenantId = "$(tenantId)"
+                    }
+                    
+                    Write-Host "`nApplying Git configuration to Data Factory..." -ForegroundColor Yellow
+                    
+                    # Apply Git configuration
+                    Set-AzDataFactoryV2 -ResourceGroupName "$(resourceGroupName)" -Name "$(dataFactoryName)" -RepoConfiguration $repoConfig
+                    
+                    Write-Host "✓ Cross-project Git integration configured successfully!" -ForegroundColor Green
+                    Write-Host "✓ ADF will now sync with: $targetOrganization/$targetProject/$targetRepository" -ForegroundColor Green
+                    
+                } catch {
+                    Write-Warning "Git configuration failed: $($_.Exception.Message)"
+                    Write-Host "`n📋 Manual Git Configuration Steps:" -ForegroundColor Yellow
+                    Write-Host "1. Open Azure Data Factory Studio" -ForegroundColor White
+                    Write-Host "2. Click 'Set up code repository' or manage Git settings" -ForegroundColor White
+                    Write-Host "3. Configure Azure DevOps Git with these details:" -ForegroundColor White
+                    Write-Host "   - Azure DevOps account: $(gitOrganizationName)" -ForegroundColor Cyan
+                    Write-Host "   - Project name: $(gitProjectName)" -ForegroundColor Cyan
+                    Write-Host "   - Repository name: $(gitRepositoryName)" -ForegroundColor Cyan
+                    Write-Host "   - Collaboration branch: $(gitCollaborationBranch)" -ForegroundColor Cyan
+                    Write-Host "   - Root folder: $(gitRootFolder)" -ForegroundColor Cyan
+                    # Don't fail the pipeline for Git configuration issues
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Start ADF triggers after deployment
+          - task: AzurePowerShell@5
+            displayName: 'Start ADF Triggers After Deployment'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "=== Starting ADF Triggers After Deployment ===" -ForegroundColor Yellow
+                
+                try {
+                    # Wait a bit for deployment to complete
+                    Start-Sleep -Seconds 30
+                    
+                    # Get all triggers
+                    $triggers = Get-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -ErrorAction SilentlyContinue
+                    
+                    if ($triggers) {
+                        foreach ($trigger in $triggers) {
+                            if ($trigger.RuntimeState -eq "Stopped") {
+                                Write-Host "Starting trigger: $($trigger.Name)" -ForegroundColor Yellow
+                                Start-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name $trigger.Name -Force
+                                Write-Host "✓ Started trigger: $($trigger.Name)" -ForegroundColor Green
+                            }
+                        }
+                        Write-Host "✓ All triggers started successfully" -ForegroundColor Green
+                    } else {
+                        Write-Host "No triggers found to start" -ForegroundColor Cyan
+                    }
+                } catch {
+                    Write-Warning "Error starting triggers: $($_.Exception.Message)"
+                    Write-Host "Triggers can be started manually in ADF Studio if needed" -ForegroundColor Yellow
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Final validation and summary
+          - task: AzurePowerShell@5
+            displayName: 'Deployment Validation & Summary'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "=== DEPLOYMENT VALIDATION & SUMMARY ===" -ForegroundColor Green
+                
+                try {
+                    # Check Data Factory status
+                    $df = Get-AzDataFactoryV2 -ResourceGroupName "$(resourceGroupName)" -Name "$(dataFactoryName)"
+                    Write-Host "✓ Data Factory Status: $($df.ProvisioningState)" -ForegroundColor Green
+                    Write-Host "  Location: $($df.Location)" -ForegroundColor Cyan
+                    Write-Host "  Resource Group: $($df.ResourceGroupName)" -ForegroundColor Cyan
+                    
+                    # List Integration Runtimes
+                    $integrationRuntimes = Get-AzDataFactoryV2IntegrationRuntime -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)"
+                    Write-Host "`nIntegration Runtimes:" -ForegroundColor Cyan
+                    foreach ($ir in $integrationRuntimes) {
+                        Write-Host "  ✓ $($ir.Name) - Type: $($ir.Type), State: $($ir.State)" -ForegroundColor White
+                    }
+                    
+                    # List Triggers
+                    $triggers = Get-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -ErrorAction SilentlyContinue
+                    Write-Host "`nTriggers:" -ForegroundColor Cyan
+                    if ($triggers) {
+                        foreach ($trigger in $triggers) {
+                            Write-Host "  ✓ $($trigger.Name) - State: $($trigger.RuntimeState)" -ForegroundColor White
+                        }
+                    } else {
+                        Write-Host "  No triggers deployed" -ForegroundColor White
+                    }
+                    
+                    # List Pipelines
+                    $pipelines = Get-AzDataFactoryV2Pipeline -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -ErrorAction SilentlyContinue
+                    Write-Host "`nPipelines:" -ForegroundColor Cyan
+                    if ($pipelines) {
+                        foreach ($pipeline in $pipelines) {
+                            Write-Host "  ✓ $($pipeline.Name)" -ForegroundColor White
+                        }
+                    } else {
+                        Write-Host "  No pipelines deployed - ready for development" -ForegroundColor White
+                    }
+                    
+                    Write-Host "`n" + "="*60 -ForegroundColor Green
+                    Write-Host "🎉 ARM TEMPLATE DEPLOYMENT COMPLETED SUCCESSFULLY!" -ForegroundColor Green
+                    Write-Host "="*60 -ForegroundColor Green
+                    
+                    Write-Host "`n📋 NEXT STEPS:" -ForegroundColor Yellow
+                    Write-Host "1. Install Integration Runtime on your on-premises machine" -ForegroundColor White
+                    Write-Host "2. Open Azure Data Factory Studio: https://adf.azure.com" -ForegroundColor White
+                    Write-Host "3. Configure data sources and build pipelines" -ForegroundColor White
+                    Write-Host "4. Set up monitoring and alerts as needed" -ForegroundColor White
+                    
+                } catch {
+                    Write-Error "Validation failed: $($_.Exception.Message)"
+                    throw
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
