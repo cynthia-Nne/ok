@@ -1,0 +1,283 @@
+# Azure Data Factory DevOps Pipeline - Fixed Version
+trigger:
+- main
+
+variables:
+  # Global variables
+  azureSubscription: 'your-service-connection-name'
+  resourceGroupName: 'your-resource-group'
+  dataFactoryName: 'your-data-factory-name'
+  location: 'uksouth'
+  
+pool:
+  vmImage: 'windows-latest'  # Using windows-latest for better Azure PowerShell support
+
+stages:
+- stage: Build
+  displayName: 'Build Stage'
+  jobs:
+  - job: BuildJob
+    displayName: 'Build ADF Artifacts'
+    steps:
+    
+    # Install required Azure PowerShell modules
+    - task: PowerShell@2
+      displayName: 'Install Required Azure Modules'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "Installing required Azure PowerShell modules..."
+          
+          # Set PowerShell execution policy
+          Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+          
+          # Install required modules with force to avoid conflicts
+          Install-Module -Name Az.Accounts -Force -AllowClobber -Scope CurrentUser
+          Install-Module -Name Az.Profile -Force -AllowClobber -Scope CurrentUser
+          Install-Module -Name Az.DataFactory -Force -AllowClobber -Scope CurrentUser
+          Install-Module -Name Az.Resources -Force -AllowClobber -Scope CurrentUser
+          
+          # Import modules
+          Import-Module Az.Accounts -Force
+          Import-Module Az.Profile -Force
+          Import-Module Az.DataFactory -Force
+          Import-Module Az.Resources -Force
+          
+          Write-Host "Modules installed successfully"
+          Get-Module Az.* -ListAvailable | Select-Object Name, Version
+        pwsh: false
+        
+    # Validate ARM template
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Validate ARM Template'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: '$(azureSubscription)'
+        subscriptionId: '$(subscriptionId)'
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: '$(resourceGroupName)'
+        location: '$(location)'
+        templateLocation: 'Linked artifact'
+        csmFile: '$(Build.Repository.LocalPath)/ARMTemplateForFactory.json'
+        csmParametersFile: '$(Build.Repository.LocalPath)/ARMTemplateParametersForFactory.json'
+        deploymentMode: 'Validation'
+
+- stage: Deploy
+  displayName: 'Deploy to Azure'
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployADF
+    displayName: 'Deploy Azure Data Factory'
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          
+          # Ensure PowerShell modules are available in deployment
+          - task: PowerShell@2
+            displayName: 'Setup Azure PowerShell Modules'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Setting up Azure PowerShell modules for deployment..."
+                
+                # Set execution policy
+                Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+                
+                # Install and import required modules
+                $modules = @('Az.Accounts', 'Az.Profile', 'Az.DataFactory', 'Az.Resources')
+                
+                foreach ($module in $modules) {
+                    if (!(Get-Module -ListAvailable -Name $module)) {
+                        Write-Host "Installing module: $module"
+                        Install-Module -Name $module -Force -AllowClobber -Scope CurrentUser
+                    }
+                    Import-Module -Name $module -Force
+                    Write-Host "Module $module is ready"
+                }
+                
+                # Verify modules are loaded
+                Get-Module Az.* | Select-Object Name, Version
+              pwsh: false
+
+          # Stop ADF triggers before deployment
+          - task: AzurePowerShell@5
+            displayName: 'Stop ADF Triggers'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "Stopping all triggers in Data Factory: $(dataFactoryName)"
+                
+                try {
+                    # Get all triggers
+                    $triggers = Get-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)"
+                    
+                    foreach ($trigger in $triggers) {
+                        if ($trigger.RuntimeState -eq "Started") {
+                            Write-Host "Stopping trigger: $($trigger.Name)"
+                            Stop-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name $trigger.Name -Force
+                        }
+                    }
+                    Write-Host "All triggers stopped successfully"
+                } catch {
+                    Write-Warning "Error stopping triggers: $($_.Exception.Message)"
+                    # Continue deployment even if trigger stop fails
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Deploy ARM template
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Data Factory ARM Template'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: '$(azureSubscription)'
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: '$(resourceGroupName)'
+              location: '$(location)'
+              templateLocation: 'Linked artifact'
+              csmFile: '$(Pipeline.Workspace)/drop/ARMTemplateForFactory.json'
+              csmParametersFile: '$(Pipeline.Workspace)/drop/ARMTemplateParametersForFactory.json'
+              overrideParameters: |
+                -factoryName "$(dataFactoryName)" 
+                -integrationRuntimeName "$(integrationRuntimeName)"
+                -location "$(location)"
+              deploymentMode: 'Incremental'
+
+          # Configure Git Integration (if needed)
+          - task: AzurePowerShell@5
+            displayName: 'Configure Git Integration'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "Configuring Git integration for Data Factory"
+                
+                $resourceGroupName = "$(resourceGroupName)"
+                $dataFactoryName = "$(dataFactoryName)"
+                $repoConfiguration = @{
+                    accountName = "$(System.TeamFoundationCollectionUri)".Replace("https://dev.azure.com/", "").Replace("/", "")
+                    repositoryName = "$(Build.Repository.Name)"
+                    collaborationBranch = "main"
+                    rootFolder = "/"
+                    projectName = "$(System.TeamProject)"
+                    tenantId = "$(tenantId)"
+                }
+                
+                try {
+                    # Configure Azure DevOps Git integration
+                    Set-AzDataFactoryV2 -ResourceGroupName $resourceGroupName -Name $dataFactoryName -RepoConfiguration $repoConfiguration
+                    Write-Host "Git integration configured successfully"
+                } catch {
+                    Write-Warning "Git configuration failed: $($_.Exception.Message)"
+                    Write-Host "Continuing without Git integration..."
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Configure Self-Hosted Integration Runtime
+          - task: AzurePowerShell@5
+            displayName: 'Configure Self-Hosted Integration Runtime'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "Configuring Self-Hosted Integration Runtime"
+                
+                $resourceGroupName = "$(resourceGroupName)"
+                $dataFactoryName = "$(dataFactoryName)"
+                $integrationRuntimeName = "$(integrationRuntimeName)"
+                
+                try {
+                    # Check if Integration Runtime exists
+                    $existingIR = Get-AzDataFactoryV2IntegrationRuntime -ResourceGroupName $resourceGroupName -DataFactoryName $dataFactoryName -Name $integrationRuntimeName -ErrorAction SilentlyContinue
+                    
+                    if (-not $existingIR) {
+                        Write-Host "Creating Self-Hosted Integration Runtime: $integrationRuntimeName"
+                        
+                        # Create Self-Hosted Integration Runtime
+                        Set-AzDataFactoryV2IntegrationRuntime -ResourceGroupName $resourceGroupName -DataFactoryName $dataFactoryName -Name $integrationRuntimeName -Type SelfHosted -Description "Self-Hosted Integration Runtime for on-premises data access"
+                        
+                        Write-Host "Integration Runtime created successfully"
+                        
+                        # Get authentication keys
+                        $keys = Get-AzDataFactoryV2IntegrationRuntimeKey -ResourceGroupName $resourceGroupName -DataFactoryName $dataFactoryName -Name $integrationRuntimeName
+                        Write-Host "Authentication Key 1: $($keys.AuthKey1)"
+                        Write-Host "Authentication Key 2: $($keys.AuthKey2)"
+                        Write-Host "Please use these keys to register your on-premises Integration Runtime"
+                    } else {
+                        Write-Host "Integration Runtime $integrationRuntimeName already exists"
+                    }
+                } catch {
+                    Write-Error "Failed to configure Integration Runtime: $($_.Exception.Message)"
+                    throw
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Start ADF triggers after deployment
+          - task: AzurePowerShell@5
+            displayName: 'Start ADF Triggers'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "Starting triggers in Data Factory: $(dataFactoryName)"
+                
+                try {
+                    # Wait a bit for deployment to complete
+                    Start-Sleep -Seconds 30
+                    
+                    # Get all triggers
+                    $triggers = Get-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)"
+                    
+                    foreach ($trigger in $triggers) {
+                        if ($trigger.RuntimeState -eq "Stopped") {
+                            Write-Host "Starting trigger: $($trigger.Name)"
+                            Start-AzDataFactoryV2Trigger -ResourceGroupName "$(resourceGroupName)" -DataFactoryName "$(dataFactoryName)" -Name $trigger.Name -Force
+                        }
+                    }
+                    Write-Host "All triggers started successfully"
+                } catch {
+                    Write-Warning "Error starting triggers: $($_.Exception.Message)"
+                }
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
+
+          # Validate deployment
+          - task: AzurePowerShell@5
+            displayName: 'Validate Deployment'
+            inputs:
+              azureSubscription: '$(azureSubscription)'
+              ScriptType: 'InlineScript'
+              Inline: |
+                Write-Host "Validating Data Factory deployment"
+                
+                $resourceGroupName = "$(resourceGroupName)"
+                $dataFactoryName = "$(dataFactoryName)"
+                
+                # Check Data Factory status
+                $dataFactory = Get-AzDataFactoryV2 -ResourceGroupName $resourceGroupName -Name $dataFactoryName
+                Write-Host "Data Factory Status: $($dataFactory.ProvisioningState)"
+                
+                # List Integration Runtimes
+                $integrationRuntimes = Get-AzDataFactoryV2IntegrationRuntime -ResourceGroupName $resourceGroupName -DataFactoryName $dataFactoryName
+                Write-Host "Integration Runtimes:"
+                foreach ($ir in $integrationRuntimes) {
+                    Write-Host "  - Name: $($ir.Name), Type: $($ir.Type), State: $($ir.State)"
+                }
+                
+                # List Triggers
+                $triggers = Get-AzDataFactoryV2Trigger -ResourceGroupName $resourceGroupName -DataFactoryName $dataFactoryName
+                Write-Host "Triggers:"
+                foreach ($trigger in $triggers) {
+                    Write-Host "  - Name: $($trigger.Name), State: $($trigger.RuntimeState)"
+                }
+                
+                Write-Host "Deployment validation completed"
+              azurePowerShellVersion: 'LatestVersion'
+              pwsh: false
