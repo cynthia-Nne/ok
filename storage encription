@@ -1,0 +1,183 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the storage account (must be globally unique)"
+      }
+    },
+    "existingKeyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the existing Key Vault containing encryption key"
+      }
+    },
+    "existingKeyName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the encryption key in the Key Vault"
+      }
+    },
+    "storageAccountType": {
+      "type": "string",
+      "defaultValue": "Standard_LRS",
+      "allowedValues": [
+        "Standard_LRS",
+        "Standard_GRS", 
+        "Standard_RAGRS",
+        "Standard_ZRS",
+        "Premium_LRS"
+      ]
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    }
+  },
+  "variables": {
+    "keyVaultUri": "[concat('https://', parameters('existingKeyVaultName'), '.vault.azure.net/')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "[parameters('storageAccountType')]"
+      },
+      "kind": "StorageV2",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "keySource": "Microsoft.Keyvault",
+          "keyvaultproperties": {
+            "keyname": "[parameters('existingKeyName')]",
+            "keyvaulturi": "[variables('keyVaultUri')]"
+          },
+          "services": {
+            "blob": {
+              "enabled": true,
+              "keyType": "Account"
+            },
+            "file": {
+              "enabled": true,
+              "keyType": "Account"
+            }
+          }
+        },
+        "accessTier": "Hot"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/accessPolicies",
+      "apiVersion": "2023-07-01",
+      "name": "[concat(parameters('existingKeyVaultName'), '/add')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ],
+      "properties": {
+        "accessPolicies": [
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01', 'Full').identity.principalId]",
+            "permissions": {
+              "keys": [
+                "get",
+                "wrapKey",
+                "unwrapKey"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "storageAccountName": {
+      "type": "string",
+      "value": "[parameters('storageAccountName')]"
+    },
+    "storageAccountId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+    },
+    "storageAccountPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-05-01', 'Full').identity.principalId]"
+    }
+  }
+}
+
+
+
+
+# Storage Account Deployment Pipeline Section
+# This goes after your Key Vault deployment in the same pipeline
+
+    # Deploy Storage Account with Key Vault encryption
+    - task: AzureResourceManagerTemplateDeployment@3
+      name: deployStorage
+      displayName: 'Deploy Storage Account with Key Vault Encryption'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: '$(azureServiceConnection)'
+        subscriptionId: '$(subscriptionId)'
+        resourceGroupName: '$(resourceGroupName)'
+        location: '$(location)'
+        templateLocation: 'Linked artifact'
+        csmFile: 'templates/storage-template.json'
+        csmParametersFile: 'parameters/storage-parameters.json'
+        overrideParameters: |
+          -storageAccountName $(storageAccountName)
+          -existingKeyVaultName $(parseKeyVaultOutputs.keyVaultName)
+          -existingKeyName $(parseKeyVaultOutputs.keyName)
+          -location "$(location)"
+        deploymentMode: 'Incremental'
+        deploymentName: 'storage-deployment-$(Build.BuildId)'
+        deploymentOutputs: 'storageOutputs'
+
+    # Verify encryption is working
+    - task: AzurePowerShell@5
+      displayName: 'Verify Storage Account Encryption'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        ScriptType: 'InlineScript'
+        Inline: |
+          # Parse storage deployment outputs
+          $outputs = '$(storageOutputs)' | ConvertFrom-Json
+          $storageAccountName = $outputs.storageAccountName.value
+          $resourceGroupName = "$(resourceGroupName)"
+          
+          Write-Host "🔍 Verifying storage account encryption configuration..."
+          
+          # Get storage account details
+          $storageAccount = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $storageAccountName
+          $encryptionSource = $storageAccount.Encryption.KeySource
+          
+          Write-Host "Storage Account: $storageAccountName"
+          Write-Host "Encryption Source: $encryptionSource"
+          
+          if ($encryptionSource -eq "Microsoft.Keyvault") {
+              $keyVaultProps = $storageAccount.Encryption.KeyVaultProperties
+              Write-Host "✅ SUCCESS: Storage account is encrypted with Key Vault keys!" -ForegroundColor Green
+              Write-Host "  Key Vault URI: $($keyVaultProps.KeyVaultUri)" -ForegroundColor Yellow
+              Write-Host "  Key Name: $($keyVaultProps.KeyName)" -ForegroundColor Yellow
+              Write-Host "  Key Version: $($keyVaultProps.KeyVersion)" -ForegroundColor Yellow
+          } else {
+              Write-Error "❌ ERROR: Storage account is not encrypted with Key Vault keys!"
+              Write-Host "Expected: Microsoft.Keyvault"
+              Write-Host "Actual: $encryptionSource"
+              exit 1
+          }
+        azurePowerShellVersion: 'LatestVersion'
+
+
+
