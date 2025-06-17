@@ -1,0 +1,237 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Storage Account with Key Vault encryption using existing User Managed Identity"
+  },
+  "parameters": {
+    "storageAccountName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the storage account (must be globally unique)"
+      }
+    },
+    "existingKeyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the existing Key Vault containing encryption key"
+      }
+    },
+    "existingKeyName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the encryption key in the Key Vault"
+      }
+    },
+    "existingUmiResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource ID of the existing User Managed Identity"
+      }
+    },
+    "existingUmiPrincipalId": {
+      "type": "string",
+      "metadata": {
+        "description": "Principal ID of the existing User Managed Identity"
+      }
+    },
+    "storageAccountType": {
+      "type": "string",
+      "defaultValue": "Standard_LRS",
+      "allowedValues": [
+        "Standard_LRS",
+        "Standard_GRS", 
+        "Standard_RAGRS",
+        "Standard_ZRS",
+        "Premium_LRS"
+      ],
+      "metadata": {
+        "description": "Storage account replication type"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for the storage account"
+      }
+    }
+  },
+  "variables": {
+    "keyVaultUri": "[concat('https://', parameters('existingKeyVaultName'), '.vault.azure.net/')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "[parameters('storageAccountType')]"
+      },
+      "kind": "StorageV2",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[parameters('existingUmiResourceId')]": {}
+        }
+      },
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "supportsHttpsTrafficOnly": true,
+        "allowSharedKeyAccess": true,
+        "encryption": {
+          "keySource": "Microsoft.Keyvault",
+          "identity": {
+            "userAssignedIdentity": "[parameters('existingUmiResourceId')]"
+          },
+          "keyvaultproperties": {
+            "keyname": "[parameters('existingKeyName')]",
+            "keyvaulturi": "[variables('keyVaultUri')]"
+          },
+          "services": {
+            "blob": {
+              "enabled": true,
+              "keyType": "Account"
+            },
+            "file": {
+              "enabled": true,
+              "keyType": "Account"
+            }
+          }
+        },
+        "accessTier": "Hot",
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "virtualNetworkRules": [],
+          "ipRules": [],
+          "defaultAction": "Allow"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/accessPolicies",
+      "apiVersion": "2023-07-01",
+      "name": "[concat(parameters('existingKeyVaultName'), '/add')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ],
+      "properties": {
+        "accessPolicies": [
+          {
+            "tenantId": "[subscription().tenantId]",
+            "objectId": "[parameters('existingUmiPrincipalId')]",
+            "permissions": {
+              "keys": [
+                "get",
+                "wrapKey",
+                "unwrapKey"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "storageAccountName": {
+      "type": "string",
+      "value": "[parameters('storageAccountName')]"
+    },
+    "storageAccountId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+    },
+    "userManagedIdentityId": {
+      "type": "string",
+      "value": "[parameters('existingUmiResourceId')]"
+    },
+    "encryptionKeyUri": {
+      "type": "string",
+      "value": "[concat(variables('keyVaultUri'), 'keys/', parameters('existingKeyName'))]"
+    }
+  }
+}
+
+
+
+
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "storageAccountName": {
+      "value": "mystorageacct001"
+    },
+    "existingKeyVaultName": {
+      "value": "your-existing-keyvault-name"
+    },
+    "existingKeyName": {
+      "value": "storage-encryption-key"
+    },
+    "existingUmiResourceId": {
+      "value": "/subscriptions/your-subscription-id/resourceGroups/your-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/your-umi-name"
+    },
+    "existingUmiPrincipalId": {
+      "value": "your-umi-principal-id"
+    },
+    "storageAccountType": {
+      "value": "Standard_LRS"
+    },
+    "location": {
+      "value": "East US"
+    }
+  }
+}
+
+
+
+
+
+
+
+trigger:
+- main
+
+variables:
+  azureServiceConnection: 'your-azure-service-connection'
+  subscriptionId: 'your-subscription-id'
+  resourceGroupName: 'rg-storage-demo'
+  storageAccountName: 'stg$(Build.BuildId)'
+
+stages:
+- stage: Deploy
+  jobs:
+  - job: DeployStorage
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy Storage with UMI'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: '$(azureServiceConnection)'
+        subscriptionId: '$(subscriptionId)'
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: '$(resourceGroupName)'
+        location: 'East US'
+        templateLocation: 'Linked artifact'
+        csmFile: 'templates/storage-template.json'
+        csmParametersFile: 'parameters/storage-parameters.json'
+        overrideParameters: '-storageAccountName "$(storageAccountName)"'
+        deploymentMode: 'Incremental'
+
+    - task: AzureCLI@2
+      displayName: 'Verify Encryption'
+      inputs:
+        azureSubscription: '$(azureServiceConnection)'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Verifying encryption..."
+          az storage account show \
+            --name $(storageAccountName) \
+            --resource-group $(resourceGroupName) \
+            --query 'encryption.keySource' \
+            --output tsv
