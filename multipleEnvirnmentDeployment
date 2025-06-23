@@ -1,0 +1,354 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - README.md
+
+variables:
+  - name: serviceConnection
+    value: 'storageAccountConnection-9s'  # Your existing service connection
+  - name: vmImageName  
+    value: 'windows-latest'
+
+# Global variables - you can put these in a separate file
+- template: variables/global-variables.yml
+
+pool:
+  vmImage: $(vmImageName)
+
+stages:
+#============================================================================
+# DEV ENVIRONMENT 
+#============================================================================
+- stage: DEV
+  displayName: 'Deploy to DEV Environment'
+  variables:
+  - template: variables/dev-variables.yml
+  jobs:
+  - template: deploy-environment.yml
+    parameters:
+      environmentName: 'dev'
+      resourceGroupName: $(resourceGroupName)
+
+#============================================================================
+# SIT ENVIRONMENT 
+#============================================================================
+- stage: SIT
+  displayName: 'Deploy to SIT Environment'
+  dependsOn: DEV
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: variables/sit-variables.yml
+  jobs:
+  - template: deploy-environment.yml
+    parameters:
+      environmentName: 'sit'
+      resourceGroupName: $(resourceGroupName)
+
+#============================================================================
+# UAT ENVIRONMENT 
+#============================================================================
+- stage: UAT
+  displayName: 'Deploy to UAT Environment'
+  dependsOn: SIT
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: variables/uat-variables.yml
+  jobs:
+  - template: deploy-environment.yml
+    parameters:
+      environmentName: 'uat'
+      resourceGroupName: $(resourceGroupName)
+
+
+
+
+
+        THE SEND TEMPLATE WITH THE FIRST IS CALLING 
+
+        # deploy-environment.yml
+# Put this file in the same folder as your main pipeline
+
+parameters:
+- name: environmentName
+  type: string
+- name: resourceGroupName
+  type: string
+
+jobs:
+#============================================================================
+# VALIDATION STAGE - Validate all templates first
+#============================================================================
+- job: validate_main
+  displayName: 'Validate ${{ parameters.environmentName }} Main Template'
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate Main Template'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: './infrastructure/main.json'
+      csmParametersFile: './infrastructure/parameters/${{ parameters.environmentName }}.parameters.json'
+      deploymentMode: 'Validation'
+
+- job: validate_datasync
+  displayName: 'Validate ${{ parameters.environmentName }} DataSync Template'
+  dependsOn: validate_main
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate DataSync Template'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: l'
+      csmParametersFile: './infrastructure/parameters/${{ parameters.environmentName }}.parameters.json'
+      deploymentMode: 'Validation'
+
+- job: validate_storage
+  displayName: 'Validate ${{ parameters.environmentName }} Storage Account'
+  dependsOn: validate_datasync
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate Storage Account'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '.Parameters_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Validation'
+
+- job: validate_keyvault
+  displayName: 'Validate ${{ parameters.environmentName }} KeyVault Secret'
+  dependsOn: validate_storage
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate KeyVault Secret'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Validation'
+
+- job: validate_sqlserver
+  displayName: 'Validate ${{ parameters.environmentName }} SQL Server'
+  dependsOn: validate_keyvault
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate SQL Server'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Validation'
+
+- job: validate_database
+  displayName: 'Validate ${{ parameters.environmentName }} Database'
+  dependsOn: validate_sqlserver
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate Database'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Validation'
+
+- job: validate_vm
+  displayName: 'Validate ${{ parameters.environmentName }} Virtual Machine'
+  dependsOn: validate_database
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Validate Virtual Machine'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Validation'
+
+#============================================================================
+# DEPLOYMENT STAGE - Deploy all resources after validation passes
+#============================================================================
+- job: deploy_storage
+  displayName: 'Deploy ${{ parameters.environmentName }} Storage Account'
+  dependsOn: validate_vm  # Wait for all validations to complete
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Deploy Storage Account'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: 'Parameters_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Incremental'
+
+- job: deploy_keyvault
+  displayName: 'Deploy ${{ parameters.environmentName }} KeyVault Secret'
+  dependsOn: deploy_storage
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Deploy KeyVault Secret'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Incremental'
+
+- job: deploy_sqlserver
+  displayName: 'Deploy ${{ parameters.environmentName }} SQL Server'
+  dependsOn: deploy_keyvault
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Deploy SQL Server'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '.json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Incremental'
+
+- job: deploy_database
+  displayName: 'Deploy ${{ parameters.environmentName }} Database with DNS Resolution'
+  dependsOn: deploy_sqlserver
+  steps:
+  - task: PowerShell@2
+    displayName: 'Resolve DNS'
+    inputs:
+      targetType: 'inline'
+      script: |
+        $attempt = 0;
+        for (; $attempt -le 10; $attempt++) {
+          try {
+            $dnsResult = Resolve-DnsName -Name "vs-iac-${{ parameters.environmentName }}-sql-dev-da.privatelink.database.windows.net" -Type A
+            $ipResult = Test-NetConnection -ComputerName $dnsResult.IPAddress -Port 443
+            
+            if ((-not ($dnsResult.Type4Succeeded)) -and ($attempt -le 10)) {
+              Write-Output "DNS cannot be resolved. Attempt: $attempt. Retrying in 60 seconds..."
+              Start-Sleep -Seconds 60
+              continue
+            }
+          } catch {
+            if ($attempt -le 10) {
+              Write-Output "DNS cannot be resolved. Attempt: $attempt. Retrying in 60 seconds..."
+              Start-Sleep -Seconds 60
+              continue
+            }
+            throw
+          }
+        }
+        
+        if ($attempt -eq 10) {
+          throw "DNS cannot be resolved after ten attempts..."
+        }
+        
+        Write-Host "The DNS has been resolved..."
+
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Deploy Database'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '..json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Incremental'
+
+- job: deploy_vm
+  displayName: 'Deploy ${{ parameters.environmentName }} Virtual Machine'
+  dependsOn: deploy_database
+  steps:
+  - task: AzureResourceManagerTemplateDeployment@3
+    displayName: 'Deploy Virtual Machine'
+    inputs:
+      deploymentScope: 'Resource Group'
+      azureResourceManagerConnection: $(serviceConnection)
+      subscriptionId: $(subscriptionId)
+      action: 'Create Or Update Resource Group'
+      resourceGroupName: ${{ parameters.resourceGroupName }}
+      location: 'UK South'
+      templateLocation: 'Linked artifact'
+      csmFile: '..json'
+      csmParametersFile: '_${{ parameters.environmentName }}.json'
+      deploymentMode: 'Incremental'
+
+
+
+
+      Variable Files - Create a variables/ folder with these 4 files:
+variables/global-variables.yml
+yamlvariables:
+  - name: subscriptionId
+    value: 'your-subscription-id-here'
+variables/dev-variables.yml
+yamlvariables:
+  - name: subscriptionId
+    value: 'your-subscription-id-here'
+  - name: resourceGroupName
+    value: 'CISWMS-dev-rg'
+  - name: storageAccountName
+    value: 'ciswmsdevsa001'
+  - name: keyVaultName
+    value: 'ciswms-dev-kv'
+  - name: sqlServerName
+    value: 'ciswms-dev-sql'
