@@ -66,6 +66,93 @@ stages:
 
 
 
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - README.md
+
+variables:
+  - name: serviceConnection
+    value: 'storageAccountConnection-9s'
+  - name: vmImageName  
+    value: 'windows-latest'
+- template: variables/global-variables.yml
+
+pool:
+  vmImage: $(vmImageName)
+
+stages:
+#============================================================================
+# DEV ENVIRONMENT 
+#============================================================================
+- stage: DEV
+  displayName: 'Deploy to DEV Environment'
+  variables:
+  - template: variables/dev-variables.yml
+  jobs:
+  - deployment: DeployDEV
+    displayName: 'Deploy to DEV'
+    environment: 'DEV'  # This creates approval gate
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: deploy-environment.yml
+            parameters:
+              environmentName: 'dev'
+              resourceGroupName: $(resourceGroupName)
+
+#============================================================================
+# SIT ENVIRONMENT 
+#============================================================================
+- stage: SIT
+  displayName: 'Deploy to SIT Environment'
+  dependsOn: DEV
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: variables/sit-variables.yml
+  jobs:
+  - deployment: DeploySIT
+    displayName: 'Deploy to SIT'
+    environment: 'SIT'  # This creates approval gate
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: deploy-environment.yml
+            parameters:
+              environmentName: 'sit'
+              resourceGroupName: $(resourceGroupName)
+
+#============================================================================
+# UAT ENVIRONMENT 
+#============================================================================
+- stage: UAT
+  displayName: 'Deploy to UAT Environment'
+  dependsOn: SIT
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: variables/uat-variables.yml
+  jobs:
+  - deployment: DeployUAT
+    displayName: 'Deploy to UAT'
+    environment: 'UAT'  # This creates approval gate
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - template: deploy-environment.yml
+            parameters:
+              environmentName: 'uat'
+              resourceGroupName: $(resourceGroupName)
+
+
+
+
 
         THE SEND TEMPLATE WITH THE FIRST IS CALLING 
 
@@ -214,6 +301,12 @@ jobs:
   displayName: 'Deploy ${{ parameters.environmentName }} Storage Account'
   dependsOn: validate_vm  # Wait for all validations to complete
   steps:
+- task: ManualValidation@0
+  displayName: 'Approve Deployment to ${{ parameters.environmentName }}'
+  inputs:
+    notifyUsers: 'your-email@company.com'  # Add your email here
+    instructions: 'All validations passed. Please review and approve deployment to ${{ parameters.environmentName }} environment.'
+    onTimeout: 'reject'
   - task: AzureResourceManagerTemplateDeployment@3
     displayName: 'Deploy Storage Account'
     inputs:
