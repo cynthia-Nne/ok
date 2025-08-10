@@ -1,0 +1,195 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Deploy Azure Service Bus Premium with Private Endpoint - No DNS management"
+  },
+  "parameters": {
+    "serviceBusNamespaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Service Bus namespace"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "virtualNetworkName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the existing virtual network"
+      }
+    },
+    "subnetName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the existing subnet for private endpoint"
+      }
+    },
+    "disableLocalAuth": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Disable local authentication (connection strings) - use Azure AD only"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {
+        "Environment": "Production",
+        "Service": "ServiceBus"
+      },
+      "metadata": {
+        "description": "Tags to apply to resources"
+      }
+    }
+  },
+  "variables": {
+    "privateEndpointName": "[concat(parameters('serviceBusNamespaceName'), '-private-endpoint')]",
+    "subnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), parameters('subnetName'))]",
+    "customNetworkInterfaceName": "[concat(parameters('serviceBusNamespaceName'), '-nic')]"
+  },
+  "resources": [
+    {
+      "comments": "Service Bus Premium Namespace with Private Endpoint support",
+      "type": "Microsoft.ServiceBus/namespaces",
+      "apiVersion": "2022-01-01-preview",
+      "name": "[parameters('serviceBusNamespaceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "Premium",
+        "tier": "Premium",
+        "capacity": 1
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "zoneRedundant": true,
+        "minimumTlsVersion": "1.2",
+        "disableLocalAuth": "[parameters('disableLocalAuth')]",
+        "publicNetworkAccess": "Disabled",
+        "premiumMessagingPartitions": 1
+      }
+    },
+    {
+      "comments": "Private Endpoint for Service Bus - DNS managed separately",
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2021-05-01", 
+      "name": "[variables('privateEndpointName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', parameters('serviceBusNamespaceName'))]"
+      ],
+      "properties": {
+        "subnet": {
+          "id": "[variables('subnetId')]"
+        },
+        "customNetworkInterfaceName": "[variables('customNetworkInterfaceName')]",
+        "privateLinkServiceConnections": [
+          {
+            "name": "[variables('privateEndpointName')]",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.ServiceBus/namespaces', parameters('serviceBusNamespaceName'))]",
+              "groupIds": [
+                "namespace"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "serviceBusNamespace": {
+      "type": "string",
+      "value": "[parameters('serviceBusNamespaceName')]",
+      "metadata": {
+        "description": "Name of the created Service Bus namespace"
+      }
+    },
+    "serviceBusResourceId": {
+      "type": "string", 
+      "value": "[resourceId('Microsoft.ServiceBus/namespaces', parameters('serviceBusNamespaceName'))]",
+      "metadata": {
+        "description": "Resource ID of the Service Bus namespace"
+      }
+    },
+    "privateEndpointName": {
+      "type": "string",
+      "value": "[variables('privateEndpointName')]",
+      "metadata": {
+        "description": "Name of the private endpoint"
+      }
+    },
+    "privateEndpointIP": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Network/privateEndpoints', variables('privateEndpointName')), '2021-05-01').customDnsConfigs[0].ipAddresses[0]]",
+      "metadata": {
+        "description": "Private IP address of the Service Bus endpoint"
+      }
+    },
+    "serviceBusFQDN": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ServiceBus/namespaces', parameters('serviceBusNamespaceName'))).serviceBusEndpoint]",
+      "metadata": {
+        "description": "Service Bus namespace endpoint URL"
+      }
+    },
+    "systemAssignedIdentity": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ServiceBus/namespaces', parameters('serviceBusNamespaceName')), '2022-01-01-preview', 'full').identity.principalId]",
+      "metadata": {
+        "description": "Principal ID of the system-assigned managed identity"
+      }
+    }
+  }
+}
+
+
+
+
+
+parameters.json
+
+
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "serviceBusNamespaceName": {
+      "value": "sb-mycompany-prod-001"
+    },
+    "location": {
+      "value": "East US"
+    },
+    "virtualNetworkName": {
+      "value": "vnet-hub-prod"
+    },
+    "subnetName": {
+      "value": "subnet-privateendpoints"
+    },
+    "disableLocalAuth": {
+      "value": false
+    },
+    "tags": {
+      "value": {
+        "Environment": "Production",
+        "Service": "ServiceBus",
+        "CostCenter": "IT-Infrastructure",
+        "Owner": "Platform-Team",
+        "Project": "Enterprise-Messaging",
+        "BusinessUnit": "Technology",
+        "DataClassification": "Confidential",
+        "CreatedBy": "ARM-Template",
+        "MaintenanceWindow": "Sunday-2AM-EST"
+      }
+    }
+  }
+}
