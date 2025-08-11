@@ -193,3 +193,462 @@ parameters.json
     }
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    include:
+    - Infrastructure/ServiceBus/*
+    - Pipelines/ServiceBus/*
+
+parameters:
+- name: deployToDev
+  displayName: 'Deploy to DEV Environment'
+  type: boolean
+  default: true
+- name: deployToSIT
+  displayName: 'Deploy to SIT Environment' 
+  type: boolean
+  default: false
+- name: deployToUAT
+  displayName: 'Deploy to UAT Environment'
+  type: boolean
+  default: false
+- name: deployToProd
+  displayName: 'Deploy to PROD Environment'
+  type: boolean
+  default: false
+
+variables:
+- name: release
+  value: $[counter(format('{0:yyyyMMdd}', pipeline.startTime), 0)]
+- name: major
+  value: 1
+- name: minor
+  value: 0
+- name: patch
+  value: 0
+- name: system.debug
+  value: true
+- name: serviceConnection
+  value: 'YourServiceConnection'
+- name: templateFile
+  value: './Infrastructure/ServiceBus/serviceBus.json'
+
+stages:
+# ===============================
+# VALIDATION STAGE
+# ===============================
+- stage: Validation
+  displayName: 'Validate ARM Templates'
+  jobs:
+  - job: ValidateTemplates
+    displayName: 'Validate ARM Templates'
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Validate DEV ARM Template'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Validate ARM template with DEV parameters
+          az deployment group validate `
+            --resource-group "rg-validation-temp" `
+            --template-file "$(templateFile)" `
+            --parameters "@./Infrastructure/ServiceBus/dev.parameters.json"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM template validation failed for DEV"
+            exit 1
+          }
+          Write-Host "DEV ARM template validation successful"
+
+    - task: AzureCLI@2
+      displayName: 'Validate SIT ARM Template'
+      inputs:
+        azureSubscription: $(serviceConnection)
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Validate ARM template with SIT parameters
+          az deployment group validate `
+            --resource-group "rg-validation-temp" `
+            --template-file "$(templateFile)" `
+            --parameters "@./Infrastructure/ServiceBus/sit.parameters.json"
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ARM template validation failed for SIT"
+            exit 1
+          }
+          Write-Host "SIT ARM template validation successful"
+
+    - task: PowerShell@2
+      displayName: 'Test Network Connectivity'
+      inputs:
+        targetType: 'inline'
+        script: |
+          $attempts = 0
+          do {
+            try {
+              $dnsResult = Resolve-DnsName -Name "servicebus.windows.net" -Type A
+              if ($dnsResult) {
+                Write-Output "DNS resolution successful"
+                break
+              }
+            }
+            catch {
+              Write-Warning "DNS resolution failed. Attempt: $($attempts + 1). Retrying in 30 seconds..."
+              Start-Sleep -Seconds 30
+              $attempts++
+            }
+          } while ($attempts -lt 10)
+          
+          if ($attempts -eq 10) {
+            Write-Error "Failed to resolve DNS after 10 attempts"
+            exit 1
+          }
+
+# ===============================
+# DEV ENVIRONMENT
+# ===============================
+- stage: DEV_Environment
+  displayName: 'Deploy to DEV Environment'
+  dependsOn: Validation
+  condition: and(succeeded(), eq('${{ parameters.deployToDev }}', true))
+  variables:
+  - name: environmentName
+    value: 'DEV'
+  - name: resourceGroupName
+    value: 'rg-servicebus-dev'
+  - name: parametersFile
+    value: './Infrastructure/ServiceBus/dev.parameters.json'
+  jobs:
+  - deployment: DeployServiceBus
+    displayName: 'Deploy Service Bus to DEV'
+    pool:
+      vmImage: 'windows-latest'
+    environment: 'DEV'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Service Bus to DEV'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(serviceConnection)
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceGroupName)
+              location: 'UK South'
+              templateLocation: 'Linked artifact'
+              csmFile: $(templateFile)
+              csmParametersFile: $(parametersFile)
+              deploymentMode: 'Incremental'
+              deploymentName: 'ServiceBus-DEV-$(Build.BuildNumber)'
+
+          - task: AzurePowerShell@5
+            displayName: 'Verify DEV Deployment'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                # Read Service Bus name from parameters file
+                $paramsContent = Get-Content "$(parametersFile)" | ConvertFrom-Json
+                $serviceBusName = $paramsContent.parameters.serviceBusNamespaceName.value
+                
+                Write-Output "Checking Service Bus: $serviceBusName in Resource Group: $(resourceGroupName)"
+                
+                # Get Service Bus namespace details
+                try {
+                  $namespace = Get-AzServiceBusNamespace -ResourceGroupName "$(resourceGroupName)" -Name $serviceBusName
+                  Write-Output "✅ Service Bus Namespace: $($namespace.Name)"
+                  Write-Output "✅ Status: $($namespace.Status)"
+                  Write-Output "✅ SKU: $($namespace.Sku.Name)"
+                  Write-Output "✅ Location: $($namespace.Location)"
+                  
+                  if ($namespace.ServiceBusEndpoint) {
+                    Write-Output "✅ Endpoint: $($namespace.ServiceBusEndpoint)"
+                  }
+                  
+                  Write-Output "DEV Service Bus deployment verified successfully"
+                }
+                catch {
+                  Write-Error "Failed to verify Service Bus deployment: $_"
+                  exit 1
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+# ===============================
+# SIT ENVIRONMENT  
+# ===============================
+- stage: SIT_Environment
+  displayName: 'Deploy to SIT Environment'
+  dependsOn: DEV_Environment
+  condition: and(succeeded(), eq('${{ parameters.deployToSIT }}', true))
+  variables:
+  - name: environmentName
+    value: 'SIT'
+  - name: resourceGroupName
+    value: 'rg-servicebus-sit'
+  - name: parametersFile
+    value: './Infrastructure/ServiceBus/sit.parameters.json'
+  jobs:
+  - deployment: DeployServiceBus
+    displayName: 'Deploy Service Bus to SIT'
+    pool:
+      vmImage: 'windows-latest'
+    environment: 'SIT'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Service Bus to SIT'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(serviceConnection)
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceGroupName)
+              location: 'UK South'
+              templateLocation: 'Linked artifact'
+              csmFile: $(templateFile)
+              csmParametersFile: $(parametersFile)
+              deploymentMode: 'Incremental'
+              deploymentName: 'ServiceBus-SIT-$(Build.BuildNumber)'
+
+          - task: AzurePowerShell@5
+            displayName: 'Verify SIT Deployment'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                # Read Service Bus name from parameters file
+                $paramsContent = Get-Content "$(parametersFile)" | ConvertFrom-Json
+                $serviceBusName = $paramsContent.parameters.serviceBusNamespaceName.value
+                
+                Write-Output "Checking Service Bus: $serviceBusName in Resource Group: $(resourceGroupName)"
+                
+                # Get Service Bus namespace details
+                try {
+                  $namespace = Get-AzServiceBusNamespace -ResourceGroupName "$(resourceGroupName)" -Name $serviceBusName
+                  Write-Output "✅ Service Bus Namespace: $($namespace.Name)"
+                  Write-Output "✅ Status: $($namespace.Status)"
+                  Write-Output "✅ SKU: $($namespace.Sku.Name)"
+                  Write-Output "✅ Location: $($namespace.Location)"
+                  
+                  # Check if Premium SKU has additional features
+                  if ($namespace.Sku.Name -eq "Premium") {
+                    Write-Output "✅ Premium Features Available"
+                    Write-Output "✅ Zone Redundant: $($namespace.ZoneRedundant)"
+                  }
+                  
+                  Write-Output "SIT Service Bus deployment verified successfully"
+                }
+                catch {
+                  Write-Error "Failed to verify Service Bus deployment: $_"
+                  exit 1
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+# ===============================
+# UAT ENVIRONMENT
+# ===============================
+- stage: UAT_Environment
+  displayName: 'Deploy to UAT Environment'
+  dependsOn: SIT_Environment
+  condition: and(succeeded(), eq('${{ parameters.deployToUAT }}', true))
+  variables:
+  - name: environmentName
+    value: 'UAT'
+  - name: resourceGroupName
+    value: 'rg-servicebus-uat'
+  - name: parametersFile
+    value: './Infrastructure/ServiceBus/uat.parameters.json'
+  jobs:
+  - deployment: DeployServiceBus
+    displayName: 'Deploy Service Bus to UAT'
+    pool:
+      vmImage: 'windows-latest'
+    environment: 'UAT'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Service Bus to UAT'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(serviceConnection)
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceGroupName)
+              location: 'UK South'
+              templateLocation: 'Linked artifact'
+              csmFile: $(templateFile)
+              csmParametersFile: $(parametersFile)
+              deploymentMode: 'Incremental'
+              deploymentName: 'ServiceBus-UAT-$(Build.BuildNumber)'
+
+          - task: AzurePowerShell@5
+            displayName: 'Verify UAT Deployment'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                # Read Service Bus name from parameters file
+                $paramsContent = Get-Content "$(parametersFile)" | ConvertFrom-Json
+                $serviceBusName = $paramsContent.parameters.serviceBusNamespaceName.value
+                
+                Write-Output "Checking Service Bus: $serviceBusName in Resource Group: $(resourceGroupName)"
+                
+                # Get Service Bus namespace details
+                try {
+                  $namespace = Get-AzServiceBusNamespace -ResourceGroupName "$(resourceGroupName)" -Name $serviceBusName
+                  Write-Output "✅ Service Bus Namespace: $($namespace.Name)"
+                  Write-Output "✅ Status: $($namespace.Status)"
+                  Write-Output "✅ SKU: $($namespace.Sku.Name)"
+                  Write-Output "✅ Capacity: $($namespace.Sku.Capacity)"
+                  Write-Output "✅ Location: $($namespace.Location)"
+                  
+                  if ($namespace.Sku.Name -eq "Premium") {
+                    Write-Output "✅ Premium Features:"
+                    Write-Output "   - Zone Redundant: $($namespace.ZoneRedundant)"
+                    Write-Output "   - Private Endpoint Ready: $($namespace.PublicNetworkAccess -eq 'Disabled')"
+                  }
+                  
+                  Write-Output "UAT Service Bus deployment verified successfully"
+                }
+                catch {
+                  Write-Error "Failed to verify Service Bus deployment: $_"
+                  exit 1
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+# ===============================
+# PRODUCTION ENVIRONMENT
+# ===============================
+- stage: PROD_Environment
+  displayName: 'Deploy to PRODUCTION Environment'
+  dependsOn: UAT_Environment
+  condition: and(succeeded(), eq('${{ parameters.deployToProd }}', true))
+  variables:
+  - name: environmentName
+    value: 'PROD'
+  - name: resourceGroupName
+    value: 'rg-servicebus-prod'
+  - name: parametersFile
+    value: './Infrastructure/ServiceBus/prod.parameters.json'
+  jobs:
+  - deployment: DeployServiceBus
+    displayName: 'Deploy Service Bus to PRODUCTION'
+    pool:
+      vmImage: 'windows-latest'
+    environment: 'PRODUCTION'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          
+          - task: AzureResourceManagerTemplateDeployment@3
+            displayName: 'Deploy Service Bus to PRODUCTION'
+            inputs:
+              deploymentScope: 'Resource Group'
+              azureResourceManagerConnection: $(serviceConnection)
+              subscriptionId: '$(subscriptionId)'
+              action: 'Create Or Update Resource Group'
+              resourceGroupName: $(resourceGroupName)
+              location: 'UK South'
+              templateLocation: 'Linked artifact'
+              csmFile: $(templateFile)
+              csmParametersFile: $(parametersFile)
+              deploymentMode: 'Incremental'
+              deploymentName: 'ServiceBus-PROD-$(Build.BuildNumber)'
+
+          - task: AzurePowerShell@5
+            displayName: 'Verify PRODUCTION Deployment'
+            inputs:
+              azureSubscription: $(serviceConnection)
+              ScriptType: 'InlineScript'
+              Inline: |
+                # Read Service Bus name from parameters file
+                $paramsContent = Get-Content "$(parametersFile)" | ConvertFrom-Json
+                $serviceBusName = $paramsContent.parameters.serviceBusNamespaceName.value
+                
+                Write-Output "Checking PRODUCTION Service Bus: $serviceBusName in Resource Group: $(resourceGroupName)"
+                
+                # Get Service Bus namespace details
+                try {
+                  $namespace = Get-AzServiceBusNamespace -ResourceGroupName "$(resourceGroupName)" -Name $serviceBusName
+                  Write-Output "✅ PRODUCTION Service Bus Namespace: $($namespace.Name)"
+                  Write-Output "✅ Status: $($namespace.Status)"
+                  Write-Output "✅ SKU: $($namespace.Sku.Name)"
+                  Write-Output "✅ Capacity: $($namespace.Sku.Capacity)"
+                  Write-Output "✅ Location: $($namespace.Location)"
+                  
+                  if ($namespace.Sku.Name -eq "Premium") {
+                    Write-Output "✅ PRODUCTION Premium Features:"
+                    Write-Output "   - Zone Redundant: $($namespace.ZoneRedundant)"
+                    Write-Output "   - Private Network Access: $($namespace.PublicNetworkAccess -eq 'Disabled')"
+                    Write-Output "   - Minimum TLS Version: $($namespace.MinimumTlsVersion)"
+                    
+                    # Check for managed identity
+                    if ($namespace.Identity) {
+                      Write-Output "   - Managed Identity: Enabled"
+                      Write-Output "   - Principal ID: $($namespace.Identity.PrincipalId)"
+                    }
+                  }
+                  
+                  # Log connection information (without sensitive data)
+                  Write-Output "✅ Service Bus FQDN: $($namespace.ServiceBusEndpoint)"
+                  Write-Output "✅ Resource ID: $($namespace.Id)"
+                  
+                  Write-Output "🎉 PRODUCTION Service Bus deployment completed and verified successfully!"
+                }
+                catch {
+                  Write-Error "❌ Failed to verify PRODUCTION Service Bus deployment: $_"
+                  exit 1
+                }
+              azurePowerShellVersion: 'LatestVersion'
+
+          - task: PowerShell@2
+            displayName: 'Generate Deployment Summary'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Output "=================================================="
+                Write-Output "         SERVICE BUS DEPLOYMENT SUMMARY"
+                Write-Output "=================================================="
+                Write-Output "Environment: PRODUCTION"
+                Write-Output "Resource Group: $(resourceGroupName)"
+                Write-Output "Template File: $(templateFile)"
+                Write-Output "Parameters File: $(parametersFile)"
+                Write-Output "Deployment Name: ServiceBus-PROD-$(Build.BuildNumber)"
+                Write-Output "Build Number: $(Build.BuildNumber)"
+                Write-Output "Build ID: $(Build.BuildId)"
+                Write-Output "Deployment Timestamp: $(System.DateTime)"
+                Write-Output "=================================================="
